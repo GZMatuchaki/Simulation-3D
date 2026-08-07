@@ -1,0 +1,2059 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teorema da Divergência — Visualização</title>
+<style>
+  html,body{margin:0;padding:0;background:#0d0f14;color:#E8EAF6;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;}
+  #wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}
+  #viz-root{width:100%;max-width:620px;}
+  .hint{position:fixed;left:12px;bottom:8px;font-size:11px;color:#5a6070;}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="viz-root"></div></div>
+<div class="hint">arraste p/ girar · scroll p/ zoom · ▶ p/ animar</div>
+<script>
+/* ============================================================
+   SHIM: recria o mínimo da API do Obsidian usada pelo código,
+   para que ele rode em qualquer navegador sem o Obsidian.
+   ============================================================ */
+(function(){
+  if(!Element.prototype.createEl){
+    Element.prototype.createEl=function(tag,o){
+      const el=document.createElement(tag);
+      if(o){
+        if(o.text!=null) el.textContent=o.text;
+        if(o.cls) el.className=o.cls;
+        if(o.attr) for(const k in o.attr) el.setAttribute(k,o.attr[k]);
+      }
+      this.appendChild(el);
+      return el;
+    };
+  }
+  if(!Element.prototype.empty){
+    Element.prototype.empty=function(){
+      while(this.firstChild) this.removeChild(this.firstChild);
+    };
+  }
+})();
+
+// "dv" falso: só precisa de um container que seja um elemento do DOM.
+const dv={ container: document.getElementById("viz-root") };
+
+/* ============================================================
+   A PARTIR DAQUI: seu código v13, sem alterações.
+   ============================================================ */
+const BUILD="v13"; // bump on code edit
+const STATE_KEY="__viz_divergence_theorem";
+const QUALITY={
+ pixelRatio:1,
+ surfaceSegments:40,
+ gridLines:10,
+ gridSamples:46,
+ mapSize:154,
+ targetFPS:30,
+ overlayEveryNFrames:3
+};
+
+const previous=window[STATE_KEY];
+if(previous&&!previous.cleaned&&previous.build===BUILD&&previous.stage instanceof HTMLElement){
+ dv.container.appendChild(previous.stage);
+ previous.reattach(dv.container);
+}else{
+ if(previous) previous.cleanup();
+ buildVisualization(dv.container);
+}
+
+function buildVisualization(root){
+ if(typeof dv.container.empty==="function") dv.container.empty();
+
+ window.__vizCache??=new Map();
+ function cached(k,f){
+  if(!window.__vizCache.has(k))window.__vizCache.set(k,f());
+  return window.__vizCache.get(k);
+ }
+
+ const stage=root.createEl("div");
+ stage.style.cssText="max-width:620px;position:relative;overflow:hidden";
+ stage.style.width="100%";
+ stage.style.height="430px";
+ stage.style.background="transparent";
+ stage.style.boxSizing="border-box";
+
+ const disposables=[];
+ const eventListeners=[];
+ const lastText=new Map();
+
+ function setText(el,text){
+  if(lastText.get(el)===text)return;
+  lastText.set(el,text);
+  el.textContent=text;
+ }
+
+ function trackDisposable(x){
+  if(x)disposables.push(x);
+  return x;
+ }
+
+ function addListener(target,type,listener,options){
+  target.addEventListener(type,listener,options);
+  eventListeners.push({target,type,listener,options});
+ }
+
+ let T=null;
+ let renderer=null;
+ let scene=null;
+ let camera=null;
+ let surfaceMesh=null;
+
+ let lastWidth=-1;
+ let lastHeight=-1;
+ let threeLoadPromise=null;
+ let fatalShown=false;
+
+ const state={
+  build:BUILD,
+  stop:false,
+  cleaned:false,
+  visible:true,
+  animating:false,
+  raf:0,
+  lastTime:0,
+  accumulator:0,
+  renderer:null,
+  observer:null,
+  resizeObserver:null,
+  stage,
+  reattach,
+  cleanup
+ };
+ window[STATE_KEY]=state;
+
+ function reattach(newRoot){
+  if(state.cleaned)return;
+  if(stage.parentElement!==newRoot)newRoot.appendChild(stage);
+  if(state.observer)state.observer.disconnect();
+  if(state.resizeObserver)state.resizeObserver.disconnect();
+  if(state.observer)state.observer.observe(stage);
+  if(state.resizeObserver)state.resizeObserver.observe(stage);
+  lastWidth=-1;
+  lastHeight=-1;
+  recalcRendererSize();
+  render();
+  // reattachment may keep 1 idle WebGL context after note close until future build cleanup; intentional because idle context << reconstruction each keystroke.
+ }
+
+ function cleanup(){
+  if(state.cleaned)return;
+  state.cleaned=true;
+  state.stop=true;
+  if(state.raf){
+   cancelAnimationFrame(state.raf);
+   state.raf=0;
+  }
+  if(state.observer)state.observer.disconnect();
+  if(state.resizeObserver)state.resizeObserver.disconnect();
+  for(let i=0;i<eventListeners.length;i++){
+   const e=eventListeners[i];
+   e.target.removeEventListener(e.type,e.listener,e.options);
+  }
+  for(const d of new Set(disposables)){
+   if(d&&typeof d.dispose==="function")d.dispose();
+  }
+  if(state.renderer){
+   state.renderer.dispose();
+   state.renderer.forceContextLoss();
+  }
+  stage.remove();
+  delete window[STATE_KEY];
+ }
+
+ /* ============================================================
+    UI
+    ============================================================ */
+
+ const hud=stage.createEl("div");
+ hud.style.cssText=
+  "position:absolute;left:10px;top:10px;z-index:10;pointer-events:none;" +
+  "padding:7px 9px;border-radius:9px;background:rgba(8,10,14,.48);" +
+  "border:1px solid rgba(184,188,200,.16);" +
+  "font:12px/1.34 ui-monospace,SFMono-Regular,Consolas,monospace;" +
+  "color:#E8EAF6;max-width:300px";
+
+ const theoremEl=hud.createEl("div");
+ theoremEl.style.fontWeight="700";
+
+ const surfIntegralEl=hud.createEl("div");
+ surfIntegralEl.style.marginTop="3px";
+
+ const volIntegralEl=hud.createEl("div");
+
+ const selectedEl=hud.createEl("div");
+ selectedEl.style.marginTop="4px";
+
+ const statusEl=hud.createEl("div");
+ statusEl.style.cssText="margin-top:3px;color:#B8BCC8";
+
+ setText(theoremEl,"∯S F·n dS = ∭V (∇·F) dV");
+ setText(selectedEl,"Clique na superfície para inspecionar F·n.");
+ setText(statusEl,"Status: pausado");
+
+ /* ============================================================
+    COLOR BAR
+    ============================================================ */
+
+ const colorWrap=stage.createEl("div");
+ colorWrap.style.cssText=
+  "position:absolute;right:10px;top:10px;z-index:10;pointer-events:none;" +
+  "padding:6px 7px;border-radius:9px;background:rgba(8,10,14,.46);" +
+  "border:1px solid rgba(184,188,200,.15);" +
+  "font:10px/1.15 ui-monospace,SFMono-Regular,Consolas,monospace;" +
+  "color:#E8EAF6;display:flex;gap:6px;align-items:stretch";
+
+ const colorCol=colorWrap.createEl("div");
+ const colorTitle=colorCol.createEl("div");
+ colorTitle.style.cssText="text-align:center;margin-bottom:4px";
+ setText(colorTitle,"F·n");
+
+ const colorBar=colorCol.createEl("div");
+ colorBar.style.cssText=
+  "width:15px;height:118px;border-radius:7px;" +
+  "border:1px solid rgba(255,255,255,.18);" +
+  "background:linear-gradient(to top,#E58B91 0%,#D5D7DE 50%,#7D9FE6 100%)";
+
+ const colorLabels=colorWrap.createEl("div");
+ colorLabels.style.cssText="display:flex;flex-direction:column;justify-content:space-between;min-width:42px";
+ const maxLabel=colorLabels.createEl("div");
+ const zeroLabel=colorLabels.createEl("div");
+ const minLabel=colorLabels.createEl("div");
+ setText(zeroLabel,"0");
+
+ /* ============================================================
+    FIELD SELECTOR
+    ============================================================ */
+
+ const fieldPanel=stage.createEl("div");
+ fieldPanel.style.cssText=
+  "position:absolute;left:10px;bottom:10px;z-index:12;pointer-events:auto;" +
+  "display:flex;flex-direction:column;gap:4px;padding:6px;border-radius:9px;" +
+  "background:rgba(8,10,14,.45);border:1px solid rgba(184,188,200,.15)";
+
+ const fieldPanelTitle=fieldPanel.createEl("div");
+ fieldPanelTitle.style.cssText="padding:0 4px 2px 4px;font:11px ui-monospace,monospace;color:#B8BCC8";
+ setText(fieldPanelTitle,"Campo F");
+
+ const MODE_COUNT=6;
+ const MODE_LABELS=[
+  "1  Divergente",
+  "2  Convergente",
+  "3  Uniforme",
+  "4  Paralelo c/ gradiente",
+  "5  Espalhado |F|=η",
+  "6  Incompressível"
+ ];
+
+ const MODE_TITLES=[
+  "Fonte radial centrada dentro da esfera: divergência positiva.",
+  "Sumidouro radial centrado dentro da esfera: divergência negativa.",
+  "Campo uniforme e paralelo: divergência zero.",
+  "Linhas paralelas, sempre em +x, mas com módulo crescente em x: divergência positiva.",
+  "Campo espalhado com norma constante: direção varia, |F|=η.",
+  "Campo não uniforme incompressível: expansão em x compensada por contração em y e z."
+ ];
+
+ const fieldButtons=new Array(MODE_COUNT);
+ for(let i=0;i<MODE_COUNT;i++){
+  const b=fieldPanel.createEl("button");
+  setText(b,MODE_LABELS[i]);
+  b.title=MODE_TITLES[i];
+  b.style.cssText=
+   "font:11px ui-monospace,monospace;color:#E8EAF6;" +
+   "background:rgba(23,28,56,.54);border:1px solid rgba(42,49,96,.9);" +
+   "border-radius:7px;height:24px;min-width:164px;cursor:pointer;" +
+   "padding:0 7px;text-align:left";
+  fieldButtons[i]=b;
+ }
+
+ /* ============================================================
+    PLAY / RESET
+    ============================================================ */
+
+ let playBtnRef=null;
+ let resetBtnRef=null;
+ {
+  const root=stage;
+  const bar = root.createEl("div");
+  bar.style.cssText = "position:absolute;right:10px;bottom:10px;display:flex;gap:6px";
+  function btn(t, title) {
+   const b = bar.createEl("button", { text: t });
+   b.title = title;
+   b.style.cssText = "font:13px ui-monospace,monospace;color:#E8EAF6;background:rgba(23,28,56,.7);border:1px solid #2A3160;border-radius:8px;width:30px;height:28px;cursor:pointer;padding:0";
+   return b;
+  }
+  const playBtn = btn("\u25B6", "animar/pausar"), resetBtn = btn("\u27F2", "recentrar");
+  bar.style.zIndex="15";
+  bar.style.pointerEvents="auto";
+  playBtnRef=playBtn;
+  resetBtnRef=resetBtn;
+ }
+
+ playBtnRef.disabled=true;
+ resetBtnRef.disabled=true;
+
+ const loading=stage.createEl("div");
+ loading.style.cssText=
+  "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
+  "z-index:20;pointer-events:none;padding:7px 9px;border-radius:8px;" +
+  "background:rgba(8,10,14,.58);border:1px solid rgba(184,188,200,.16);" +
+  "font:11px ui-monospace,monospace;color:#B8BCC8";
+ setText(loading,"carregando THREE r128…");
+
+ /* ============================================================
+    MATHEMATICS
+    ============================================================ */
+
+ const STEP_MS=1000/QUALITY.targetFPS;
+ const FIELD_VERSION="g_v12";
+
+ const R=0.70;
+
+ const RADIAL_A=1.15;
+ const UNIFORM_F=1.00;
+
+ /*
+    Campo 4:
+    linhas rigorosamente paralelas e SEMPRE apontando para +x.
+
+        Fx = Fmin + A exp(beta x)
+
+    Como Fmin > 0 e exp(beta x) > 0:
+        Fx > 0 para todo x real.
+
+    O módulo cresce continuamente em x.
+ */
+ const PAR_FMIN=0.08;
+ const PAR_A=0.35;
+ const PAR_BETA=1.15;
+
+ /* Campo 5: espalhado com |F| constante = η */
+ const ETA_CONST=1.00;
+ const CONST_SOURCE_D=2.00;
+
+ /* Campo 6: incompressível */
+ const INCOMP_U=1.15;
+ const INCOMP_A=0.35;
+
+ const FIELD_EXT=1.08;
+ const XMIN=-1.35;
+ const XMAX=1.55;
+ const YLIM=1.40;
+ const ZLIM=1.40;
+
+ const PARTICLE_COUNT=96;
+ const FLOW_SPEED=1.00;
+
+ const GRID_NX=5;
+ const GRID_NY=5;
+ const GRID_NZ=3;
+
+ const VECTOR_LMAX=0.40;
+ const VECTOR_MHALF=0.55;
+
+ const PARAM_KEY=
+  `R=${R}`+
+  `|RAD=${RADIAL_A}`+
+  `|UNI=${UNIFORM_F}`+
+  `|PFMIN=${PAR_FMIN}`+
+  `|PA=${PAR_A}`+
+  `|PBETA=${PAR_BETA}`+
+  `|ETA=${ETA_CONST}`+
+  `|CMD=${CONST_SOURCE_D}`+
+  `|IU=${INCOMP_U}`+
+  `|IA=${INCOMP_A}`;
+
+ let activeMode=3;
+
+ const field={z:0,gx:0,gy:0,gz:0,div:0};
+
+ function evaluate(x,y,z,withGradient,modeOverride){
+  const mode=modeOverride===undefined?activeMode:modeOverride;
+  const r2=x*x+y*y+z*z;
+
+  /* 1: Divergente */
+  if(mode===0){
+   field.z=0.5*RADIAL_A*r2;
+   if(withGradient){
+    field.gx=RADIAL_A*x;
+    field.gy=RADIAL_A*y;
+    field.gz=RADIAL_A*z;
+    field.div=3*RADIAL_A;
+   }
+   return field;
+  }
+
+  /* 2: Convergente */
+  if(mode===1){
+   field.z=-0.5*RADIAL_A*r2;
+   if(withGradient){
+    field.gx=-RADIAL_A*x;
+    field.gy=-RADIAL_A*y;
+    field.gz=-RADIAL_A*z;
+    field.div=-3*RADIAL_A;
+   }
+   return field;
+  }
+
+  /* 3: Uniforme */
+  if(mode===2){
+   field.z=UNIFORM_F*x;
+   if(withGradient){
+    field.gx=UNIFORM_F;
+    field.gy=0;
+    field.gz=0;
+    field.div=0;
+   }
+   return field;
+  }
+
+  /* 4: Paralelo com gradiente, sempre em +x */
+  if(mode===3){
+   const ex=Math.exp(PAR_BETA*x);
+
+   /*
+      Potencial:
+          phi = Fmin*x + (A/beta) exp(beta*x)
+
+      portanto:
+          F = grad(phi)
+            = (Fmin + A exp(beta*x), 0, 0)
+   */
+   field.z=
+    PAR_FMIN*x+
+    (PAR_A/PAR_BETA)*ex;
+
+   if(withGradient){
+    field.gx=
+     PAR_FMIN+
+     PAR_A*ex;
+
+    field.gy=0;
+    field.gz=0;
+
+    /*
+       div F = dFx/dx
+             = A beta exp(beta*x)
+             > 0
+    */
+    field.div=
+     PAR_A*
+     PAR_BETA*
+     ex;
+   }
+
+   return field;
+  }
+
+  /* 5: Espalhado com |F| = eta */
+  if(mode===4){
+   const dx=x+CONST_SOURCE_D;
+   const rho2=dx*dx+y*y+z*z;
+   const rho=Math.sqrt(rho2);
+   const invRho=1/rho;
+
+   field.z=ETA_CONST*rho;
+
+   if(withGradient){
+    field.gx=ETA_CONST*dx*invRho;
+    field.gy=ETA_CONST*y*invRho;
+    field.gz=ETA_CONST*z*invRho;
+    field.div=2*ETA_CONST*invRho;
+   }
+   return field;
+  }
+
+  /* 6: Incompressível */
+  field.z=INCOMP_U*x+INCOMP_A*(x*x-0.5*y*y-0.5*z*z);
+  if(withGradient){
+   field.gx=INCOMP_U+2*INCOMP_A*x;
+   field.gy=-INCOMP_A*y;
+   field.gz=-INCOMP_A*z;
+   field.div=0;
+  }
+  return field;
+ }
+
+ const g=(x,y,z)=>evaluate(x,y,z,false).z;
+ void g;
+
+ function fieldScale(mode){
+  if(mode===0||mode===1){
+   return RADIAL_A*R;
+  }
+  if(mode===2){
+   return UNIFORM_F;
+  }
+  if(mode===3){
+   return (
+    PAR_FMIN+
+    PAR_A*
+    Math.exp(
+     PAR_BETA*
+     XMAX
+    )
+   );
+  }
+  if(mode===4){
+   return ETA_CONST;
+  }
+  const fxMax=INCOMP_U+2*INCOMP_A*R;
+  const transverse=INCOMP_A*R;
+  return Math.sqrt(fxMax*fxMax+2*transverse*transverse);
+ }
+
+ function saturatedLength(m){
+  return VECTOR_LMAX*m/(m+VECTOR_MHALF);
+ }
+
+ function exactBalance(mode){
+  if(mode===0){
+   return 4*Math.PI*RADIAL_A*R*R*R;
+  }
+  if(mode===1){
+   return -4*Math.PI*RADIAL_A*R*R*R;
+  }
+  if(mode===2){
+   return 0;
+  }
+  if(mode===3){
+   const q=
+    PAR_BETA*
+    R;
+
+   /*
+      Fmin é campo uniforme e sua contribuição líquida
+      em uma superfície fechada é zero.
+
+      Para a parcela A exp(beta*x):
+
+      ∭ div(F) dV
+      =
+      4πA/beta²
+      [ beta R cosh(beta R) - sinh(beta R) ]
+   */
+   return (
+    4*
+    Math.PI*
+    PAR_A*
+    (
+     q*
+     Math.cosh(q)-
+     Math.sinh(q)
+    )/
+    (
+     PAR_BETA*
+     PAR_BETA
+    )
+   );
+  }
+  if(mode===4){
+   return 8*Math.PI*ETA_CONST*R*R*R/(3*CONST_SOURCE_D);
+  }
+  return 0;
+ }
+
+ function formatSigned(v){
+  if(Math.abs(v)<5e-12)return "0.000";
+  return `${v>0?"+":""}${v.toFixed(3)}`;
+ }
+
+ function updateBalanceHUD(){
+  const b=exactBalance(activeMode);
+  setText(surfIntegralEl,`∯S F·n dS = ${formatSigned(b)}`);
+  setText(volIntegralEl,`∭V ∇·F dV = ${formatSigned(b)}`);
+ }
+
+ function hash01(n){
+  const s=Math.sin(n*127.1+311.7)*43758.5453123;
+  return s-Math.floor(s);
+ }
+
+ /* ============================================================
+    THREE LOADER
+    ============================================================ */
+
+ function showFatal(message){
+  if(state.cleaned||fatalShown)return;
+  fatalShown=true;
+  state.stop=true;
+  state.animating=false;
+  if(state.raf){
+   cancelAnimationFrame(state.raf);
+   state.raf=0;
+  }
+  playBtnRef.disabled=true;
+  resetBtnRef.disabled=true;
+  setText(playBtnRef,"\u25B6");
+  setText(statusEl,"Status: erro");
+  loading.remove();
+  const errorDiv=stage.createEl("div");
+  errorDiv.style.cssText=
+   "position:absolute;left:12px;right:12px;top:50%;transform:translateY(-50%);" +
+   "z-index:30;padding:10px;border-radius:8px;background:rgba(64,12,18,.88);" +
+   "border:1px solid rgba(240,58,58,.55);font:12px/1.4 ui-monospace,monospace;color:#FFE7EA";
+  setText(errorDiv,message);
+ }
+
+ function normalizeThreeNamespace(candidate){
+  if(candidate&&String(candidate.REVISION)==="128"&&typeof candidate.WebGLRenderer==="function"&&typeof candidate.Scene==="function"&&typeof candidate.BufferGeometry==="function")return candidate;
+  if(candidate&&candidate.default&&String(candidate.default.REVISION)==="128"&&typeof candidate.default.WebGLRenderer==="function")return candidate.default;
+  if(candidate&&candidate.THREE&&String(candidate.THREE.REVISION)==="128"&&typeof candidate.THREE.WebGLRenderer==="function")return candidate.THREE;
+  return null;
+ }
+
+ function restoreThreeGlobal(hadOwnThree,savedThree){
+  if(hadOwnThree){
+   window.THREE=savedThree;
+  }else{
+   try{ delete window.THREE; }catch(_err){ window.THREE=undefined; }
+  }
+ }
+
+ function loadThreeViaClassicScript(){
+  return new Promise((resolve,reject)=>{
+   const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
+   const savedThree=window.THREE;
+   const oldScript=document.querySelector('script[data-viz-three-r128="1"]');
+   if(oldScript)oldScript.remove();
+   const script=document.head.createEl("script");
+   script.src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+   script.async=true;
+   script.dataset.vizThreeR128="1";
+
+   const onLoad=()=>{
+    const loaded=normalizeThreeNamespace(window.THREE);
+    restoreThreeGlobal(hadOwnThree,savedThree);
+    if(loaded){
+     resolve(loaded);
+    }else{
+     reject(new Error("THREE r128 carregou, mas WebGLRenderer não ficou disponível."));
+    }
+   };
+
+   const onError=()=>{
+    restoreThreeGlobal(hadOwnThree,savedThree);
+    reject(new Error("Falha ao carregar THREE r128 pelo cdnjs."));
+   };
+
+   addListener(script,"load",onLoad,{once:true});
+   addListener(script,"error",onError,{once:true});
+  });
+ }
+
+ async function loadThreeViaIsolatedFallback(){
+  const url="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+  const response=await fetch(url,{cache:"force-cache"});
+  if(!response.ok)throw new Error(`Fallback THREE r128 falhou: HTTP ${response.status}.`);
+  const source=await response.text();
+
+  const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
+  const savedThree=window.THREE;
+  let loaded=null;
+
+  try{
+   const execute=new Function("module","exports","define",`${source}\nreturn globalThis.THREE;`);
+   loaded=normalizeThreeNamespace(execute.call(window,undefined,undefined,undefined));
+  }finally{
+   restoreThreeGlobal(hadOwnThree,savedThree);
+  }
+
+  if(!loaded)throw new Error("THREE r128 foi obtido, mas WebGLRenderer continua indisponível.");
+  return loaded;
+ }
+
+ function createFreshThreePromise(){
+  const p=loadThreeViaClassicScript().catch(()=>loadThreeViaIsolatedFallback()).then(candidate=>{
+   const normalized=normalizeThreeNamespace(candidate);
+   if(!normalized)throw new Error("Namespace THREE r128 inválido.");
+   return normalized;
+  });
+  window.__threeR128LoadPromise=p;
+  threeLoadPromise=p;
+  return p;
+ }
+
+ function loadThreeR128(){
+  const direct=normalizeThreeNamespace(window.THREE);
+  if(direct){
+   if(!window.__threeR128LoadPromise)window.__threeR128LoadPromise=Promise.resolve(direct);
+   threeLoadPromise=window.__threeR128LoadPromise;
+   return Promise.resolve(threeLoadPromise).then(candidate=>normalizeThreeNamespace(candidate)||direct).catch(()=>direct);
+  }
+
+  const existing=window.__threeR128LoadPromise;
+  if(existing){
+   const checked=Promise.resolve(existing).then(candidate=>{
+    const normalized=normalizeThreeNamespace(candidate);
+    if(normalized)return normalized;
+    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
+    return createFreshThreePromise();
+   }).catch(()=>{
+    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
+    return createFreshThreePromise();
+   });
+   window.__threeR128LoadPromise=checked;
+   threeLoadPromise=checked;
+   return checked;
+  }
+
+  return createFreshThreePromise();
+ }
+
+ function trackObjectResources(obj){
+  obj.traverse(o=>{
+   if(o.geometry)trackDisposable(o.geometry);
+   const m=o.material;
+   if(Array.isArray(m)){
+    for(let i=0;i<m.length;i++){
+     trackDisposable(m[i]);
+     if(m[i]&&m[i].map)trackDisposable(m[i].map);
+    }
+   }else if(m){
+    trackDisposable(m);
+    if(m.map)trackDisposable(m.map);
+   }
+  });
+ }
+
+ function freezeStatic(obj){
+  obj.traverse(o=>{
+   o.updateMatrix();
+   o.matrixAutoUpdate=false;
+  });
+ }
+
+ function emphasizeArrow(arrow){
+  arrow.traverse(o=>{
+   if(o.material){
+    o.material.transparent=false;
+    o.material.opacity=1;
+    o.material.depthTest=false;
+    o.material.depthWrite=false;
+   }
+  });
+ }
+
+ /* ============================================================
+    RAW CACHES
+    ============================================================ */
+
+ let surfaceColorArray=null;
+ let surfaceColorAttr=null;
+
+ function buildBaseRaw(){
+  const SEG=QUALITY.surfaceSegments;
+  const LAT=SEG;
+  const LON=SEG*2;
+  const VERTS=(LAT+1)*(LON+1);
+
+  const surfacePositions=cached(`surface|${FIELD_VERSION}|SEG=${SEG}|R=${R}`,()=>{
+   const a=new Float32Array(VERTS*3);
+   let w=0;
+   for(let i=0;i<=LAT;i++){
+    const theta=Math.PI*i/LAT;
+    const st=Math.sin(theta);
+    const ct=Math.cos(theta);
+    for(let j=0;j<=LON;j++){
+     const phi=2*Math.PI*j/LON;
+     a[w++]=R*st*Math.cos(phi);
+     a[w++]=R*st*Math.sin(phi);
+     a[w++]=R*ct;
+    }
+   }
+   return a;
+  });
+
+  const surfaceNormals=cached(`surfaceNormals|${FIELD_VERSION}|SEG=${SEG}|R=${R}`,()=>{
+   const n=new Float32Array(surfacePositions.length);
+   for(let i=0;i<n.length;i++)n[i]=surfacePositions[i]/R;
+   return n;
+  });
+
+  const surfaceIndices=cached(`triangleIndices|${FIELD_VERSION}|SEG=${SEG}|LON=${LON}`,()=>{
+   const count=6*LON*(LAT-1);
+   const idx=new Uint16Array(count);
+   let w=0;
+   const stride=LON+1;
+   for(let i=0;i<LAT;i++){
+    for(let j=0;j<LON;j++){
+     const a=i*stride+j;
+     const b=a+stride;
+     const c=a+1;
+     const d=b+1;
+     if(i!==0){
+      idx[w++]=a; idx[w++]=b; idx[w++]=c;
+     }
+     if(i!==LAT-1){
+      idx[w++]=c; idx[w++]=b; idx[w++]=d;
+     }
+    }
+   }
+   return idx;
+  });
+
+  const gridPositions=cached(`gridPositions|${FIELD_VERSION}|NX=${GRID_NX}|NY=${GRID_NY}|NZ=${GRID_NZ}|EXT=${FIELD_EXT}`,()=>{
+   const count=GRID_NX*GRID_NY*GRID_NZ;
+   const p=new Float32Array(count*3);
+   let w=0;
+   for(let iz=0;iz<GRID_NZ;iz++){
+    const z=-0.75*FIELD_EXT+(1.50*FIELD_EXT*iz/(GRID_NZ-1));
+    for(let iy=0;iy<GRID_NY;iy++){
+     const y=-FIELD_EXT+(2*FIELD_EXT*iy/(GRID_NY-1));
+     for(let ix=0;ix<GRID_NX;ix++){
+      const x=-1.15*FIELD_EXT+(2.30*FIELD_EXT*ix/(GRID_NX-1));
+      p[w++]=x;
+      p[w++]=y;
+      p[w++]=z;
+     }
+    }
+   }
+   return p;
+  });
+
+  return {
+   surfacePositions,
+   surfaceNormals,
+   surfaceIndices,
+   gridPositions,
+   vertexCount:VERTS
+  };
+ }
+
+ const baseRaw=buildBaseRaw();
+
+ function getModeRaw(mode){
+  return cached(`modeRaw|${FIELD_VERSION}|mode=${mode}|${PARAM_KEY}|SEG=${QUALITY.surfaceSegments}|NX=${GRID_NX}|NY=${GRID_NY}|NZ=${GRID_NZ}|EXT=${FIELD_EXT}`,()=>{
+   const vertexCount=baseRaw.vertexCount;
+   const colors=new Float32Array(vertexCount*3);
+   const rawDot=new Float32Array(vertexCount);
+   let maxAbs=0;
+
+   for(let i=0;i<vertexCount;i++){
+    const j=i*3;
+    const x=baseRaw.surfacePositions[j];
+    const y=baseRaw.surfacePositions[j+1];
+    const z=baseRaw.surfacePositions[j+2];
+    const nx=baseRaw.surfaceNormals[j];
+    const ny=baseRaw.surfaceNormals[j+1];
+    const nz=baseRaw.surfaceNormals[j+2];
+
+    // evaluate() reuses one shared object; consume fields immediately before the next evaluate().
+    evaluate(x,y,z,true,mode);
+    const dot=field.gx*nx+field.gy*ny+field.gz*nz;
+    rawDot[i]=dot;
+
+    const ad=Math.abs(dot);
+    if(ad>maxAbs)maxAbs=ad;
+   }
+
+   const inv=1/(maxAbs||1);
+
+   const neutralR=0.835;
+   const neutralG=0.843;
+   const neutralB=0.871;
+   const blueR=0.490;
+   const blueG=0.624;
+   const blueB=0.902;
+   const redR=0.898;
+   const redG=0.545;
+   const redB=0.569;
+
+   for(let i=0;i<vertexCount;i++){
+    const rel=rawDot[i]*inv;
+    const t=Math.pow(Math.abs(rel),0.72);
+    let r,gc,b;
+
+    if(rel>=0){
+      r=neutralR+(blueR-neutralR)*t;
+      gc=neutralG+(blueG-neutralG)*t;
+      b=neutralB+(blueB-neutralB)*t;
+    }else{
+      r=neutralR+(redR-neutralR)*t;
+      gc=neutralG+(redG-neutralG)*t;
+      b=neutralB+(redB-neutralB)*t;
+    }
+
+    const j=i*3;
+    colors[j]=r;
+    colors[j+1]=gc;
+    colors[j+2]=b;
+   }
+
+   const pointCount=baseRaw.gridPositions.length/3;
+   const arrows=new Float32Array(pointCount*18);
+   const scale=fieldScale(mode);
+   let w=0;
+
+   for(let i=0;i<pointCount;i++){
+    const j=i*3;
+    const x=baseRaw.gridPositions[j];
+    const y=baseRaw.gridPositions[j+1];
+    const z=baseRaw.gridPositions[j+2];
+
+    evaluate(x,y,z,true,mode);
+    const fx=field.gx;
+    const fy=field.gy;
+    const fz=field.gz;
+
+    const mag=Math.sqrt(fx*fx+fy*fy+fz*fz);
+    if(mag<=scale*1e-12){
+     for(let q=0;q<18;q+=3){
+      arrows[w++]=x;
+      arrows[w++]=y;
+      arrows[w++]=z;
+     }
+     continue;
+    }
+
+    const invMag=1/mag;
+    const dx=fx*invMag;
+    const dy=fy*invMag;
+    const dz=fz*invMag;
+
+    const L=0.90*saturatedLength(mag/scale);
+    const hx=x+L*dx;
+    const hy=y+L*dy;
+    const hz=z+L*dz;
+
+    let ax=0,ay=0,az=1;
+    if(Math.abs(dz)>0.86){
+     ay=1; az=0;
+    }
+
+    let ux=dy*az-dz*ay;
+    let uy=dz*ax-dx*az;
+    let uz=dx*ay-dy*ax;
+
+    const uMag=Math.sqrt(ux*ux+uy*uy+uz*uz);
+    ux/=uMag; uy/=uMag; uz/=uMag;
+
+    const headL=0.30*L;
+    const headW=0.13*L;
+
+    arrows[w++]=x; arrows[w++]=y; arrows[w++]=z;
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+    arrows[w++]=hx-headL*dx+headW*ux;
+    arrows[w++]=hy-headL*dy+headW*uy;
+    arrows[w++]=hz-headL*dz+headW*uz;
+
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+    arrows[w++]=hx-headL*dx-headW*ux;
+    arrows[w++]=hy-headL*dy-headW*uy;
+    arrows[w++]=hz-headL*dz-headW*uz;
+   }
+
+   return {colors,arrows,maxAbs};
+  });
+ }
+
+ /* ============================================================
+    MINIMAP (x horizontal, z vertical)
+    BASE(cache static) + TRAIL(empty) + VIEW
+    ============================================================ */
+
+ let mapBase=null;
+ let mapTrailCanvas=null;
+ let mapTrailCtx=null;
+ let mapCanvas=null;
+ let mapCtx=null;
+ let overlayDirty=true;
+
+ const MAP_EXT=1.55;
+ const MAP_DISPLAY_SIZE=98;
+
+ function mapX(x){
+  return (x+MAP_EXT)*(QUALITY.mapSize/(2*MAP_EXT));
+ }
+
+ function mapZ(z){
+  return QUALITY.mapSize-(z+MAP_EXT)*(QUALITY.mapSize/(2*MAP_EXT));
+ }
+
+ function drawMiniArrow(ctx,x0,z0,x1,z1,color){
+  const dx=x1-x0;
+  const dz=z1-z0;
+  const mag=Math.sqrt(dx*dx+dz*dz);
+  if(mag<1e-6)return;
+
+  const ux=dx/mag;
+  const uz=dz/mag;
+  const px=-uz;
+  const pz=ux;
+
+  const hl=4.4;
+  const hw=2.6;
+
+  ctx.beginPath();
+  ctx.moveTo(x0,z0);
+  ctx.lineTo(x1,z1);
+  ctx.strokeStyle=color;
+  ctx.lineWidth=1.35;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x1,z1);
+  ctx.lineTo(x1-hl*ux+hw*px,z1-hl*uz+hw*pz);
+  ctx.lineTo(x1-hl*ux-hw*px,z1-hl*uz-hw*pz);
+  ctx.closePath();
+  ctx.fillStyle=color;
+  ctx.fill();
+ }
+
+ function drawMiniAxes(ctx){
+  const ox=18;
+  const oy=QUALITY.mapSize-17;
+  drawMiniArrow(ctx,ox,oy,ox+20,oy,"rgba(255,255,255,.88)");
+  drawMiniArrow(ctx,ox,oy,ox,oy-20,"rgba(255,255,255,.88)");
+
+  ctx.fillStyle="rgba(255,255,255,.94)";
+  ctx.font="bold 10px ui-monospace,monospace";
+  ctx.textAlign="center";
+  ctx.textBaseline="middle";
+  ctx.fillText("x",ox+27,oy);
+  ctx.fillText("z",ox,oy-27);
+ }
+
+ function traceMiniBranch(ctx,seedX,seedZ,direction,mode){
+  let x=seedX;
+  let z=seedZ;
+  const ds=0.045;
+  const scale=fieldScale(mode);
+
+  for(let step=0;step<105;step++){
+   if(Math.abs(x)>1.38||Math.abs(z)>1.38)break;
+
+   // evaluate() reuses the shared field; consume immediately.
+   evaluate(x,0,z,true,mode);
+   const fx0=field.gx;
+   const fz0=field.gz;
+   const mag0=Math.sqrt(fx0*fx0+fz0*fz0);
+   if(mag0<=scale*1e-12)break;
+
+   const ux0=direction*fx0/mag0;
+   const uz0=direction*fz0/mag0;
+
+   const mx=x+0.5*ds*ux0;
+   const mz=z+0.5*ds*uz0;
+
+   evaluate(mx,0,mz,true,mode);
+   const fxm=field.gx;
+   const fzm=field.gz;
+   const magm=Math.sqrt(fxm*fxm+fzm*fzm);
+   if(magm<=scale*1e-12)break;
+
+   const x1=x+direction*ds*fxm/magm;
+   const z1=z+direction*ds*fzm/magm;
+
+   ctx.beginPath();
+   ctx.moveTo(mapX(x),mapZ(z));
+   ctx.lineTo(mapX(x1),mapZ(z1));
+   ctx.strokeStyle="rgba(17,180,255,.76)";
+   ctx.lineWidth=1.25;
+   ctx.stroke();
+
+   if(step===15||step===42||step===70){
+    if(direction>0){
+     drawMiniArrow(ctx,mapX(x),mapZ(z),mapX(x1),mapZ(z1),"rgba(17,180,255,.96)");
+    }else{
+     drawMiniArrow(ctx,mapX(x1),mapZ(z1),mapX(x),mapZ(z),"rgba(17,180,255,.96)");
+    }
+   }
+
+   x=x1;
+   z=z1;
+  }
+ }
+
+ function buildMinimapBase(mode){
+  return cached(`minimapBase|${FIELD_VERSION}|mode=${mode}|SIZE=${QUALITY.mapSize}|EXT=${MAP_EXT}|${PARAM_KEY}`,()=>{
+   let c;
+   if(typeof OffscreenCanvas!=="undefined"){
+    c=new OffscreenCanvas(QUALITY.mapSize,QUALITY.mapSize);
+   }else{
+    c=stage.createEl("canvas");
+    c.width=QUALITY.mapSize;
+    c.height=QUALITY.mapSize;
+    c.style.display="none";
+   }
+
+   const ctx=c.getContext("2d",{alpha:false});
+   if(ctx){
+    const bgR=16,bgG=18,bgB=24;
+    const img=ctx.createImageData(QUALITY.mapSize,QUALITY.mapSize);
+    const data=img.data;
+    for(let i=0;i<data.length;i+=4){
+     data[i]=bgR;
+     data[i+1]=bgG;
+     data[i+2]=bgB;
+     data[i+3]=255;
+    }
+
+    const raw=getModeRaw(mode);
+    const maxAbs=raw.maxAbs||1;
+    const inv=1/maxAbs;
+
+    const neutralR=0.835;
+    const neutralG=0.843;
+    const neutralB=0.871;
+    const blueR=0.490;
+    const blueG=0.624;
+    const blueB=0.902;
+    const redR=0.898;
+    const redG=0.545;
+    const redB=0.569;
+
+    const alpha=0.72;
+    const s=QUALITY.mapSize;
+    const span=2*MAP_EXT/s;
+
+    for(let py=0;py<s;py++){
+     const z=MAP_EXT-(py+0.5)*span;
+     for(let px=0;px<s;px++){
+      const x=-MAP_EXT+(px+0.5)*span;
+      const rz2=x*x+z*z;
+      if(rz2>R*R)continue;
+
+      const yAbs=Math.sqrt(R*R-rz2);
+      const nx=x/R;
+      const nz=z/R;
+
+      evaluate(x,yAbs,z,true,mode);
+      const dot1=field.gx*nx+field.gy*(yAbs/R)+field.gz*nz;
+
+      evaluate(x,-yAbs,z,true,mode);
+      const dot2=field.gx*nx+field.gy*(-yAbs/R)+field.gz*nz;
+
+      const dot=0.5*(dot1+dot2);
+      const rel=dot*inv;
+      const t=Math.pow(Math.abs(rel),0.72);
+
+      let rr,gg,bb;
+      if(rel>=0){
+       rr=neutralR+(blueR-neutralR)*t;
+       gg=neutralG+(blueG-neutralG)*t;
+       bb=neutralB+(blueB-neutralB)*t;
+      }else{
+       rr=neutralR+(redR-neutralR)*t;
+       gg=neutralG+(redG-neutralG)*t;
+       bb=neutralB+(redB-neutralB)*t;
+      }
+
+      const R8=Math.round((1-alpha)*bgR+alpha*rr*255);
+      const G8=Math.round((1-alpha)*bgG+alpha*gg*255);
+      const B8=Math.round((1-alpha)*bgB+alpha*bb*255);
+
+      const idx=(py*s+px)*4;
+      data[idx]=R8;
+      data[idx+1]=G8;
+      data[idx+2]=B8;
+      data[idx+3]=255;
+     }
+    }
+
+    ctx.putImageData(img,0,0);
+
+    if(mode===0||mode===1){
+     const N=10;
+     for(let i=0;i<N;i++){
+      const angle=2*Math.PI*i/N;
+      const sx=0.18*Math.cos(angle);
+      const sz=0.18*Math.sin(angle);
+      traceMiniBranch(ctx,sx,sz,1,mode);
+      traceMiniBranch(ctx,sx,sz,-1,mode);
+     }
+    }else{
+      const seedZ0=-0.96;
+      const seedDZ=0.32;
+      for(let i=0;i<7;i++){
+       const sz=seedZ0+seedDZ*i;
+       traceMiniBranch(ctx,0,sz,1,mode);
+       traceMiniBranch(ctx,0,sz,-1,mode);
+      }
+    }
+
+    const cx=mapX(0);
+    const cz=mapZ(0);
+    const rp=R*QUALITY.mapSize/(2*MAP_EXT);
+
+    ctx.beginPath();
+    ctx.arc(cx,cz,rp,0,Math.PI*2);
+    ctx.strokeStyle="rgba(255,255,255,.82)";
+    ctx.lineWidth=1.25;
+    ctx.stroke();
+
+    drawMiniAxes(ctx);
+   }
+
+   if(c instanceof HTMLElement)c.remove();
+   return c;
+  });
+ }
+
+ function clearOverlayTrail(){
+  if(mapTrailCtx)mapTrailCtx.clearRect(0,0,QUALITY.mapSize,QUALITY.mapSize);
+  overlayDirty=true;
+ }
+
+ function drawOverlayView(){
+  if(!mapCtx||!mapBase||!mapTrailCanvas)return;
+  mapCtx.drawImage(mapBase,0,0);
+  mapCtx.drawImage(mapTrailCanvas,0,0);
+
+  if(selectedValid){
+   mapCtx.beginPath();
+   mapCtx.arc(mapX(selectedX),mapZ(selectedZ),3.2,0,Math.PI*2);
+   mapCtx.fillStyle="#F03A3A";
+   mapCtx.fill();
+  }
+ }
+
+ /* ============================================================
+    SCENE STATE
+    ============================================================ */
+
+ let fieldArrowGeom=null;
+ let fieldArrowAttr=null;
+ let fieldArrowArray=null;
+
+ let particleGeom=null;
+ let particleAttr=null;
+ let particlePositions=null;
+ let particleAge=null;
+ let particleLife=null;
+ let particleRespawnCount=null;
+ let particleSpeed=null;
+ let particleDirtyMin=Infinity;
+ let particleDirtyMax=-1;
+
+ let selectedPoint=null;
+ let selectedPointMat=null;
+ let selectedNormalArrow=null;
+ let selectedFieldArrow=null;
+
+ let selectedValid=false;
+ let selectedX=R;
+ let selectedY=0;
+ let selectedZ=0;
+
+ let raycaster=null;
+ let rayHits=null;
+ let pointerNdc=null;
+
+ let tmpDir=null;
+ let tmpVec=null;
+ let selectedN=null;
+
+ let cameraYaw=-0.58;
+ let cameraPitch=0.40;
+ let cameraDistance=4.80;
+ let pointerDown=false;
+ let pointerMoved=false;
+ let pointerLastX=0;
+ let pointerLastY=0;
+ let pointerStartX=0;
+ let pointerStartY=0;
+
+ /* ============================================================
+    RENDER
+    ============================================================ */
+
+ function recalcRendererSize(){
+  if(!renderer||!camera||state.cleaned)return false;
+  const rect=stage.getBoundingClientRect();
+  const width=Math.max(1,Math.floor(rect.width));
+  const height=Math.max(1,Math.floor(rect.height));
+  if(width===lastWidth&&height===lastHeight)return false;
+  lastWidth=width;
+  lastHeight=height;
+  renderer.setSize(width,height,false);
+  camera.aspect=width/height;
+  camera.updateProjectionMatrix();
+  return true;
+ }
+
+ function flushDynamicRanges(){
+  if(particleAttr&&particleDirtyMax>=particleDirtyMin){
+   particleAttr.updateRange.offset=particleDirtyMin*3;
+   particleAttr.updateRange.count=(particleDirtyMax-particleDirtyMin+1)*3;
+   particleAttr.needsUpdate=true;
+   particleDirtyMin=Infinity;
+   particleDirtyMax=-1;
+  }
+ }
+
+ function render(){
+  if(!renderer||!scene||!camera||state.cleaned||state.stop)return;
+  flushDynamicRanges();
+  if(overlayDirty){
+   drawOverlayView();
+   overlayDirty=false;
+  }
+  renderer.render(scene,camera);
+ }
+
+ function updateCamera(){
+  const cp=Math.cos(cameraPitch);
+  camera.position.set(
+   cameraDistance*cp*Math.cos(cameraYaw),
+   cameraDistance*cp*Math.sin(cameraYaw),
+   cameraDistance*Math.sin(cameraPitch)
+  );
+  camera.lookAt(0,0,0);
+ }
+
+ /* ============================================================
+    SELECTED POINT
+    ============================================================ */
+
+ function setFieldArrow(arrow,x,y,z,fx,fy,fz){
+  const mag=Math.sqrt(fx*fx+fy*fy+fz*fz);
+  const scale=fieldScale(activeMode);
+
+  arrow.position.set(x,y,z);
+
+  if(mag<=scale*1e-12){
+   arrow.visible=false;
+   return;
+  }
+
+  tmpDir.set(fx/mag,fy/mag,fz/mag);
+  arrow.setDirection(tmpDir);
+
+  const L=saturatedLength(mag/scale);
+  arrow.setLength(L,0.31*L,0.17*L);
+  arrow.visible=true;
+ }
+
+ function updateSelectedSample(px,py,pz){
+  const inv=R/Math.sqrt(px*px+py*py+pz*pz);
+  selectedX=px*inv;
+  selectedY=py*inv;
+  selectedZ=pz*inv;
+  selectedValid=true;
+
+  const nx=selectedX/R;
+  const ny=selectedY/R;
+  const nz=selectedZ/R;
+  selectedN.set(nx,ny,nz);
+
+  // evaluate() reuses one shared object; consume fields immediately before the next evaluate().
+  evaluate(selectedX,selectedY,selectedZ,true);
+
+  const fx=field.gx;
+  const fy=field.gy;
+  const fz=field.gz;
+  const dot=fx*nx+fy*ny+fz*nz;
+
+  selectedPoint.position.set(selectedX,selectedY,selectedZ);
+  selectedPoint.visible=true;
+
+  selectedNormalArrow.position.set(selectedX,selectedY,selectedZ);
+  selectedNormalArrow.setDirection(selectedN);
+  selectedNormalArrow.setLength(0.35,0.105,0.060);
+  selectedNormalArrow.visible=true;
+
+  setFieldArrow(selectedFieldArrow,selectedX,selectedY,selectedZ,fx,fy,fz);
+
+  selectedEl.style.color=dot>=0?"#7D9FE6":"#E58B91";
+  setText(selectedEl,`F·n(P) = ${formatSigned(dot)}`);
+  overlayDirty=true;
+ }
+
+ function clearSelection(){
+  selectedValid=false;
+  if(selectedPoint)selectedPoint.visible=false;
+  if(selectedNormalArrow)selectedNormalArrow.visible=false;
+  if(selectedFieldArrow)selectedFieldArrow.visible=false;
+  setText(selectedEl,"Clique na superfície para inspecionar F·n.");
+  selectedEl.style.color="#E8EAF6";
+  overlayDirty=true;
+ }
+
+ /* ============================================================
+    PARTICLES
+    ============================================================ */
+
+ function hashSample(index,offset){
+  return hash01(index*37.17+offset*71.91);
+ }
+
+ function resetParticle(i,initial){
+  const count=particleRespawnCount[i];
+  particleRespawnCount[i]=count+1;
+
+  const seed=i+count*19;
+  const h1=hashSample(seed,0.11);
+  const h2=hashSample(seed,0.29);
+  const h3=hashSample(seed,0.47);
+  const h4=hashSample(seed,0.73);
+  const h5=hashSample(seed,0.91);
+
+  const dst=i*3;
+  let x=0,y=0,z=0;
+
+  if(activeMode===0){
+   const zz=2*h1-1;
+   const phi=2*Math.PI*h2;
+   const rr=initial?(0.05+0.58*Math.cbrt(h3)):(0.05+0.16*Math.cbrt(h3));
+   const xy=Math.sqrt(1-zz*zz);
+   x=rr*xy*Math.cos(phi);
+   y=rr*xy*Math.sin(phi);
+   z=rr*zz;
+   particleLife[i]=88+Math.floor(52*h4);
+  }else if(activeMode===1){
+   const zz=2*h1-1;
+   const phi=2*Math.PI*h2;
+   const rr=initial?(0.48+0.82*h3):(1.05+0.18*h3);
+   const xy=Math.sqrt(1-zz*zz);
+   x=rr*xy*Math.cos(phi);
+   y=rr*xy*Math.sin(phi);
+   z=rr*zz;
+   particleLife[i]=90+Math.floor(55*h4);
+  }else{
+   const inner=h1<0.74;
+   const maxR=inner?0.58:1.05;
+   const rr=maxR*Math.sqrt(h2);
+   const phi=2*Math.PI*h3;
+
+   x=initial?(XMIN+(XMAX-XMIN)*h4):(XMIN-0.08*h4);
+   y=rr*Math.cos(phi);
+   z=rr*Math.sin(phi);
+
+   particleLife[i]=92+Math.floor(72*h5);
+  }
+
+  particlePositions[dst]=x;
+  particlePositions[dst+1]=y;
+  particlePositions[dst+2]=z;
+  particleAge[i]=0;
+  particleSpeed[i]=0.78+0.42*h5;
+
+  if(i<particleDirtyMin)particleDirtyMin=i;
+  if(i>particleDirtyMax)particleDirtyMax=i;
+ }
+
+ function resetAllParticles(){
+  for(let i=0;i<PARTICLE_COUNT;i++)resetParticle(i,true);
+  clearOverlayTrail();
+ }
+
+ function simulateStep(){
+  const baseH=(STEP_MS/1000)*FLOW_SPEED;
+
+  for(let i=0;i<PARTICLE_COUNT;i++){
+   const dst=i*3;
+   const oldX=particlePositions[dst];
+   const oldY=particlePositions[dst+1];
+   const oldZ=particlePositions[dst+2];
+
+   // EVAL_ORDER: F is evaluated at the current algorithmic point before position update.
+   evaluate(oldX,oldY,oldZ,true);
+   const fx=field.gx;
+   const fy=field.gy;
+   const fz=field.gz;
+
+   const h=baseH*particleSpeed[i];
+
+   const newX=oldX+h*fx;
+   const newY=oldY+h*fy;
+   const newZ=oldZ+h*fz;
+
+   particleAge[i]++;
+
+   const radius2=newX*newX+newY*newY+newZ*newZ;
+   let respawn=false;
+
+   if(activeMode===0){
+    respawn=radius2>1.45*1.45||particleAge[i]>=particleLife[i];
+   }else if(activeMode===1){
+    respawn=radius2<0.035*0.035||particleAge[i]>=particleLife[i];
+   }else if(activeMode===3){
+    // Campo 4: Fx>0 em todo ponto, mas |F| é pequeno perto de XMIN, então a
+    // travessia completa leva ~200–290 passos — bem mais que a vida (92–164),
+    // que matava as partículas justamente sobre a esfera. Aqui o respawn é
+    // disparado só pela saída geométrica (garantida, pois Fx>0), sem limite de idade.
+    respawn=newX>XMAX||newX<XMIN-0.25||Math.abs(newY)>YLIM||Math.abs(newZ)>ZLIM;
+   }else{
+    respawn=newX>XMAX||newX<XMIN-0.25||Math.abs(newY)>YLIM||Math.abs(newZ)>ZLIM||particleAge[i]>=particleLife[i];
+   }
+
+   if(respawn){
+    resetParticle(i,false);
+    continue;
+   }
+
+   particlePositions[dst]=newX;
+   particlePositions[dst+1]=newY;
+   particlePositions[dst+2]=newZ;
+
+   if(i<particleDirtyMin)particleDirtyMin=i;
+   if(i>particleDirtyMax)particleDirtyMax=i;
+  }
+ }
+
+ /* ============================================================
+    FIELD SWITCHING
+    ============================================================ */
+
+ function updateModeButtonStyles(){
+  for(let i=0;i<MODE_COUNT;i++){
+   const active=i===activeMode;
+   fieldButtons[i].style.background=active?"rgba(44,232,196,.18)":"rgba(23,28,56,.54)";
+   fieldButtons[i].style.borderColor=active?"rgba(44,232,196,.72)":"rgba(42,49,96,.9)";
+   fieldButtons[i].style.color=active?"#FFFFFF":"#E8EAF6";
+  }
+ }
+
+ function applyMode(mode){
+  activeMode=mode;
+  const raw=getModeRaw(activeMode);
+
+  surfaceColorArray.set(raw.colors);
+  surfaceColorAttr.updateRange.offset=0;
+  surfaceColorAttr.updateRange.count=surfaceColorArray.length;
+  surfaceColorAttr.needsUpdate=true;
+
+  fieldArrowArray.set(raw.arrows);
+  fieldArrowAttr.updateRange.offset=0;
+  fieldArrowAttr.updateRange.count=fieldArrowArray.length;
+  fieldArrowAttr.needsUpdate=true;
+
+  setText(maxLabel,`+${raw.maxAbs.toFixed(2)}`);
+  setText(minLabel,`-${raw.maxAbs.toFixed(2)}`);
+
+  mapBase=buildMinimapBase(activeMode);
+  resetAllParticles();
+  updateBalanceHUD();
+  updateModeButtonStyles();
+
+  if(selectedValid){
+   updateSelectedSample(selectedX,selectedY,selectedZ);
+  }
+
+  overlayDirty=true;
+  render();
+ }
+
+ /* ============================================================
+    RAF
+    ============================================================ */
+
+ function canAnimate(){
+  return state.animating&&state.visible&&document.visibilityState==="visible"&&!state.stop;
+ }
+
+ function updatePlayStatus(){
+  setText(playBtnRef,state.animating?"❚❚":"\u25B6");
+
+  if(state.stop){
+   setText(statusEl,"Status: parado");
+  }else if(!state.animating){
+   setText(statusEl,"Status: pausado");
+  }else if(!state.visible){
+   setText(statusEl,"Status: animação armada; fora da viewport");
+  }else if(document.visibilityState!=="visible"){
+   setText(statusEl,"Status: animação armada; aba oculta");
+  }else{
+   setText(statusEl,"Status: animando");
+  }
+ }
+
+ function stopRaf(){
+  if(state.raf){
+   cancelAnimationFrame(state.raf);
+   state.raf=0;
+  }
+  state.lastTime=0;
+ }
+
+ function ensureRaf(){
+  if(!canAnimate()||state.raf)return;
+  state.lastTime=0;
+  state.raf=requestAnimationFrame(frame);
+ }
+
+ function frame(now){
+  state.raf=0;
+  if(!canAnimate())return;
+
+  if(state.lastTime===0){
+   state.lastTime=now;
+   state.raf=requestAnimationFrame(frame);
+   return;
+  }
+
+  let delta=now-state.lastTime;
+  state.lastTime=now;
+
+  // this is only a scheduler catch-up guard; with the current exposed controls it is inert as a physical safety cap.
+  if(delta>STEP_MS*4)delta=STEP_MS*4;
+
+  state.accumulator+=delta;
+  if(state.accumulator>STEP_MS*4)state.accumulator=STEP_MS*4;
+
+  let advanced=false;
+  while(state.accumulator>=STEP_MS){
+   simulateStep();
+   state.accumulator-=STEP_MS;
+   advanced=true;
+  }
+
+  if(advanced)render();
+  if(canAnimate())state.raf=requestAnimationFrame(frame);
+ }
+
+ /* ============================================================
+    AXIS LABEL
+    ============================================================ */
+
+ function createAxisLabel(text,color){
+  const c=stage.createEl("canvas");
+  c.width=64;
+  c.height=64;
+  c.style.display="none";
+
+  const ctx=c.getContext("2d",{alpha:true});
+  if(ctx){
+   ctx.clearRect(0,0,64,64);
+   ctx.fillStyle=color;
+   ctx.font="bold 42px ui-monospace,monospace";
+   ctx.textAlign="center";
+   ctx.textBaseline="middle";
+   ctx.fillText(text,32,32);
+  }
+
+  const tex=new T.CanvasTexture(c);
+  tex.needsUpdate=true;
+
+  const mat=new T.SpriteMaterial({map:tex,transparent:true,depthTest:false});
+  const sprite=new T.Sprite(mat);
+  sprite.scale.set(0.145,0.145,0.145);
+
+  c.remove();
+  trackDisposable(tex);
+  trackDisposable(mat);
+  return sprite;
+ }
+
+ /* ============================================================
+    THREE INIT
+    ============================================================ */
+
+ function initThree(candidate){
+  if(state.cleaned||state.stop)return;
+
+  const THREE=normalizeThreeNamespace(candidate);
+  if(!THREE){
+   showFatal("THREE r128 foi carregado, porém WebGLRenderer não foi encontrado.");
+   return;
+  }
+  T=THREE;
+
+  try{
+   renderer=new T.WebGLRenderer({
+    alpha:true,
+    antialias:false,
+    depth:true,
+    stencil:false,
+    powerPreference:"high-performance"
+   });
+  }catch(err){
+   showFatal(`WebGL não pôde ser inicializado: ${err&&err.message?err.message:String(err)}`);
+   return;
+  }
+
+  state.renderer=renderer;
+  renderer.setPixelRatio(QUALITY.pixelRatio);
+  renderer.setClearColor(0x000000,0);
+  renderer.outputEncoding=T.sRGBEncoding;
+  renderer.domElement.style.cssText=
+   "position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0;touch-action:none";
+  stage.appendChild(renderer.domElement);
+
+  scene=new T.Scene();
+  camera=new T.PerspectiveCamera(38,1,0.05,20);
+  camera.up.set(0,0,1);
+  updateCamera();
+
+  const initialRaw=getModeRaw(activeMode);
+
+  /* ---------- SPHERE ---------- */
+
+  const surfaceGeom=new T.BufferGeometry();
+  surfaceGeom.setAttribute("position",new T.BufferAttribute(baseRaw.surfacePositions,3));
+  surfaceGeom.setAttribute("normal",new T.BufferAttribute(baseRaw.surfaceNormals,3));
+
+  surfaceColorArray=new Float32Array(initialRaw.colors.length);
+  surfaceColorArray.set(initialRaw.colors);
+
+  surfaceColorAttr=new T.BufferAttribute(surfaceColorArray,3);
+  surfaceColorAttr.setUsage(T.DynamicDrawUsage);
+  surfaceGeom.setAttribute("color",surfaceColorAttr);
+
+  surfaceGeom.setIndex(new T.BufferAttribute(baseRaw.surfaceIndices,1));
+  surfaceGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),R);
+  trackDisposable(surfaceGeom);
+
+  const surfaceMat=trackDisposable(new T.MeshBasicMaterial({
+   vertexColors:true,
+   transparent:true,
+   opacity:0.82,
+   depthWrite:false,
+   side:T.FrontSide
+  }));
+
+  surfaceMesh=new T.Mesh(surfaceGeom,surfaceMat);
+  surfaceMesh.renderOrder=2;
+  scene.add(surfaceMesh);
+  freezeStatic(surfaceMesh);
+
+  /* ---------- FIELD ARROWS ---------- */
+
+  fieldArrowArray=new Float32Array(initialRaw.arrows.length);
+  fieldArrowArray.set(initialRaw.arrows);
+
+  fieldArrowGeom=new T.BufferGeometry();
+  fieldArrowAttr=new T.BufferAttribute(fieldArrowArray,3);
+  fieldArrowAttr.setUsage(T.DynamicDrawUsage);
+  fieldArrowGeom.setAttribute("position",fieldArrowAttr);
+  fieldArrowGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),2.6);
+  trackDisposable(fieldArrowGeom);
+
+  const fieldArrowMat=trackDisposable(new T.LineBasicMaterial({
+   color:0x11B4FF,
+   transparent:true,
+   opacity:0.42,
+   depthWrite:false
+  }));
+
+  const fieldArrowObj=new T.LineSegments(fieldArrowGeom,fieldArrowMat);
+  fieldArrowObj.frustumCulled=false;
+  fieldArrowObj.renderOrder=1;
+  fieldArrowObj.updateMatrix();
+  fieldArrowObj.matrixAutoUpdate=false;
+  scene.add(fieldArrowObj);
+
+  /* ---------- PARTICLES ---------- */
+
+  particlePositions=new Float32Array(PARTICLE_COUNT*3);
+  particleAge=new Uint16Array(PARTICLE_COUNT);
+  particleLife=new Uint16Array(PARTICLE_COUNT);
+  particleRespawnCount=new Uint16Array(PARTICLE_COUNT);
+  particleSpeed=new Float32Array(PARTICLE_COUNT);
+
+  particleGeom=new T.BufferGeometry();
+  particleAttr=new T.BufferAttribute(particlePositions,3);
+  particleAttr.setUsage(T.DynamicDrawUsage);
+  particleGeom.setAttribute("position",particleAttr);
+  particleGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),2.6);
+  trackDisposable(particleGeom);
+
+  const particleMat=trackDisposable(new T.PointsMaterial({
+   color:0x2CE8C4,
+   size:0.043,
+   sizeAttenuation:true,
+   transparent:true,
+   opacity:0.96,
+   depthTest:false,
+   depthWrite:false
+  }));
+
+  const particles=new T.Points(particleGeom,particleMat);
+  particles.frustumCulled=false;
+  particles.renderOrder=4;
+  particles.updateMatrix();
+  particles.matrixAutoUpdate=false;
+  scene.add(particles);
+
+  /* ---------- TEMP OBJECTS ---------- */
+
+  tmpDir=new T.Vector3(1,0,0);
+  tmpVec=new T.Vector3();
+  selectedN=new T.Vector3(1,0,0);
+  pointerNdc=new T.Vector2();
+  raycaster=new T.Raycaster();
+  rayHits=[];
+
+  /* ---------- SELECTED POINT ---------- */
+
+  const selectedGeom=trackDisposable(new T.SphereGeometry(0.058,16,10));
+  selectedPointMat=trackDisposable(new T.MeshBasicMaterial({
+   color:0xF03A3A,
+   transparent:false,
+   depthTest:false,
+   depthWrite:false
+  }));
+
+  selectedPoint=new T.Mesh(selectedGeom,selectedPointMat);
+  selectedPoint.visible=false;
+  selectedPoint.renderOrder=10;
+  scene.add(selectedPoint);
+
+  selectedNormalArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.35,0xFFFFFF,0.105,0.060);
+  selectedFieldArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.30,0x11B4FF,0.095,0.055);
+
+  trackObjectResources(selectedNormalArrow);
+  trackObjectResources(selectedFieldArrow);
+  emphasizeArrow(selectedNormalArrow);
+  emphasizeArrow(selectedFieldArrow);
+
+  selectedNormalArrow.visible=false;
+  selectedFieldArrow.visible=false;
+  selectedNormalArrow.renderOrder=11;
+  selectedFieldArrow.renderOrder=11;
+
+  scene.add(selectedNormalArrow);
+  scene.add(selectedFieldArrow);
+
+  /* ---------- XYZ AXIS ---------- */
+
+  const axisGroup=new T.Group();
+  axisGroup.position.set(-1.04,-0.92,-0.80);
+  const axisL=0.20;
+
+  const negPos=new Float32Array(18);
+  negPos[0]=-axisL; negPos[1]=0; negPos[2]=0;
+  negPos[3]=0; negPos[4]=0; negPos[5]=0;
+  negPos[6]=0; negPos[7]=-axisL; negPos[8]=0;
+  negPos[9]=0; negPos[10]=0; negPos[11]=0;
+  negPos[12]=0; negPos[13]=0; negPos[14]=-axisL;
+  negPos[15]=0; negPos[16]=0; negPos[17]=0;
+
+  const negCol=new Float32Array(18);
+  negCol[0]=17/255; negCol[1]=180/255; negCol[2]=1;
+  negCol[3]=17/255; negCol[4]=180/255; negCol[5]=1;
+  negCol[6]=1; negCol[7]=45/255; negCol[8]=170/255;
+  negCol[9]=1; negCol[10]=45/255; negCol[11]=170/255;
+  negCol[12]=44/255; negCol[13]=232/255; negCol[14]=196/255;
+  negCol[15]=44/255; negCol[16]=232/255; negCol[17]=196/255;
+
+  const negGeom=new T.BufferGeometry();
+  negGeom.setAttribute("position",new T.BufferAttribute(negPos,3));
+  negGeom.setAttribute("color",new T.BufferAttribute(negCol,3));
+  trackDisposable(negGeom);
+
+  const negMat=trackDisposable(new T.LineBasicMaterial({
+   vertexColors:true,
+   transparent:true,
+   opacity:0.22,
+   depthWrite:false
+  }));
+
+  const negAxes=new T.LineSegments(negGeom,negMat);
+  axisGroup.add(negAxes);
+
+  const ax=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),axisL,0x11B4FF,0.047,0.027);
+  const ay=new T.ArrowHelper(new T.Vector3(0,1,0),new T.Vector3(0,0,0),axisL,0xFF2DAA,0.047,0.027);
+  const az=new T.ArrowHelper(new T.Vector3(0,0,1),new T.Vector3(0,0,0),axisL,0x2CE8C4,0.047,0.027);
+  axisGroup.add(ax); axisGroup.add(ay); axisGroup.add(az);
+
+  const sx=createAxisLabel("x","#11B4FF");
+  const sy=createAxisLabel("y","#FF2DAA");
+  const sz=createAxisLabel("z","#2CE8C4");
+  sx.position.set(axisL+0.045,0,0);
+  sy.position.set(0,axisL+0.045,0);
+  sz.position.set(0,0,axisL+0.045);
+  axisGroup.add(sx); axisGroup.add(sy); axisGroup.add(sz);
+
+  trackObjectResources(ax);
+  trackObjectResources(ay);
+  trackObjectResources(az);
+
+  scene.add(axisGroup);
+  freezeStatic(axisGroup);
+
+  /* ---------- MINIMAP ---------- */
+
+  mapBase=buildMinimapBase(activeMode);
+
+  if(typeof OffscreenCanvas!=="undefined"){
+   mapTrailCanvas=new OffscreenCanvas(QUALITY.mapSize,QUALITY.mapSize);
+  }else{
+   mapTrailCanvas=stage.createEl("canvas");
+   mapTrailCanvas.width=QUALITY.mapSize;
+   mapTrailCanvas.height=QUALITY.mapSize;
+   mapTrailCanvas.style.display="none";
+  }
+  mapTrailCtx=mapTrailCanvas.getContext("2d",{alpha:true});
+  if(mapTrailCanvas instanceof HTMLElement)mapTrailCanvas.remove();
+
+  mapCanvas=stage.createEl("canvas");
+  mapCanvas.width=QUALITY.mapSize;
+  mapCanvas.height=QUALITY.mapSize;
+  mapCanvas.style.cssText=
+   "position:absolute;right:10px;top:158px;z-index:8;" +
+   `width:${MAP_DISPLAY_SIZE}px;height:${MAP_DISPLAY_SIZE}px;` +
+   "pointer-events:none;opacity:.82;border-radius:8px;" +
+   "border:1px solid rgba(184,188,200,.22)";
+  mapCtx=mapCanvas.getContext("2d",{alpha:false});
+
+  /* ---------- EVENTS ---------- */
+
+  const canvas=renderer.domElement;
+
+  addListener(canvas,"webglcontextlost",e=>{
+   e.preventDefault();
+   state.stop=true;
+   state.animating=false;
+   stopRaf();
+   playBtnRef.disabled=true;
+   setText(playBtnRef,"\u25B6");
+   setText(statusEl,"Status: contexto WebGL perdido");
+  },false);
+
+  addListener(playBtnRef,"click",()=>{
+   if(state.stop)return;
+   state.animating=!state.animating;
+   if(state.animating){
+    state.accumulator=0;
+    state.lastTime=0;
+    ensureRaf();
+   }else{
+    stopRaf();
+   }
+   updatePlayStatus();
+  },false);
+
+  addListener(resetBtnRef,"click",()=>{
+   cameraYaw=-0.58;
+   cameraPitch=0.40;
+   cameraDistance=4.80;
+   updateCamera();
+   resetAllParticles();
+   clearSelection();
+   overlayDirty=true;
+   render();
+  },false);
+
+  for(let i=0;i<MODE_COUNT;i++){
+   const mode=i;
+   addListener(fieldButtons[i],"click",()=>{ applyMode(mode); },false);
+  }
+
+  addListener(canvas,"pointerdown",e=>{
+   pointerDown=true;
+   pointerMoved=false;
+   pointerStartX=e.clientX;
+   pointerStartY=e.clientY;
+   pointerLastX=e.clientX;
+   pointerLastY=e.clientY;
+   canvas.setPointerCapture(e.pointerId);
+  },false);
+
+  addListener(canvas,"pointermove",e=>{
+   if(!pointerDown)return;
+   const dx=e.clientX-pointerLastX;
+   const dy=e.clientY-pointerLastY;
+   pointerLastX=e.clientX;
+   pointerLastY=e.clientY;
+
+   const sx=e.clientX-pointerStartX;
+   const sy=e.clientY-pointerStartY;
+   if(sx*sx+sy*sy>9)pointerMoved=true;
+
+   if(pointerMoved){
+    cameraYaw-=dx*0.006;
+    cameraPitch-=dy*0.006;
+    if(cameraPitch>1.35)cameraPitch=1.35;
+    if(cameraPitch<-1.35)cameraPitch=-1.35;
+    updateCamera();
+    render();
+   }
+  },false);
+
+  addListener(canvas,"pointerup",e=>{
+   if(!pointerDown)return;
+   pointerDown=false;
+   if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
+   if(pointerMoved)return;
+
+   const rect=canvas.getBoundingClientRect();
+   pointerNdc.x=2*(e.clientX-rect.left)/rect.width-1;
+   pointerNdc.y=1-2*(e.clientY-rect.top)/rect.height;
+   raycaster.setFromCamera(pointerNdc,camera);
+
+   rayHits.length=0;
+   raycaster.intersectObject(surfaceMesh,false,rayHits);
+
+   if(rayHits.length>0){
+    tmpVec.copy(rayHits[0].point);
+    updateSelectedSample(tmpVec.x,tmpVec.y,tmpVec.z);
+    render();
+   }
+  },false);
+
+  addListener(canvas,"pointercancel",e=>{
+   pointerDown=false;
+   if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
+  },false);
+
+  addListener(canvas,"wheel",e=>{
+   e.preventDefault();
+   cameraDistance*=Math.exp(e.deltaY*0.001);
+   if(cameraDistance<3.20)cameraDistance=3.20;
+   if(cameraDistance>7.50)cameraDistance=7.50;
+   updateCamera();
+   render();
+  },{passive:false});
+
+  addListener(document,"visibilitychange",()=>{
+   if(document.visibilityState!=="visible"){
+    stopRaf();
+   }else{
+    ensureRaf();
+   }
+   updatePlayStatus();
+  },false);
+
+  state.observer=new IntersectionObserver(entries=>{
+   const entry=entries[entries.length-1];
+   state.visible=!!(entry&&entry.isIntersecting&&entry.intersectionRatio>=0.02);
+   if(state.visible)ensureRaf();
+   else stopRaf();
+   updatePlayStatus();
+  },{threshold:[0,0.02,0.25]});
+  state.observer.observe(stage);
+
+  state.resizeObserver=new ResizeObserver(()=>{
+   if(recalcRendererSize())render();
+  });
+  state.resizeObserver.observe(stage);
+
+  /* ---------- INITIAL STATE ---------- */
+
+  resetAllParticles();
+  updateBalanceHUD();
+  updateModeButtonStyles();
+  setText(maxLabel,`+${initialRaw.maxAbs.toFixed(2)}`);
+  setText(minLabel,`-${initialRaw.maxAbs.toFixed(2)}`);
+
+  playBtnRef.disabled=false;
+  resetBtnRef.disabled=false;
+  loading.remove();
+  recalcRendererSize();
+  overlayDirty=true;
+  updatePlayStatus();
+  render();
+ }
+
+ loadThreeR128().then(initThree).catch(err=>{
+  if(window.__threeR128LoadPromise===threeLoadPromise)window.__threeR128LoadPromise=undefined;
+  showFatal(err&&err.message?err.message:String(err));
+ });
+}</script>
+</body>
+</html>
