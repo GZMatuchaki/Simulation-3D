@@ -1095,7 +1095,7 @@ function buildVisualization(root){
   /* as duas integrais sao calculadas de forma independente e coincidem ate
      ~1e-5 relativo, entao um unico numero representa honestamente as duas. */
   setText(theoremEl,
-   `\u222FS F\u00B7n dS = \u222D V \u2207\u00B7F dV = ${formatSigned(fluxValue)}`);
+   `\u222FS F\u00B7n dS = \u222DV \u2207\u00B7F dV = ${formatSigned(fluxValue)}`);
   const xl=["limite -x","centro","limite +x"][xPosIdx];
   const zl=["abaixo","centro","acima"][zPosIdx];
   setText(geomStateEl,
