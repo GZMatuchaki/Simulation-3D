@@ -14,7 +14,7 @@
 </head>
 <body>
 <div id="wrap"><div id="viz-root"></div></div>
-<div class="hint">arraste p/ girar · scroll p/ zoom · ▶ p/ animar</div>
+<div class="hint">arraste p/ girar a câmera · scroll p/ zoom · clique na superfície p/ inspecionar F·n</div>
 <script>
 /* ============================================================
    SHIM: recria o mínimo da API do Obsidian usada pelo código,
@@ -43,18 +43,15 @@
 const dv={ container: document.getElementById("viz-root") };
 
 /* ============================================================
-   A PARTIR DAQUI: o código v18.
+   A PARTIR DAQUI: o código v20.
    ============================================================ */
-const BUILD="v18"; // bump on code edit
+const BUILD="v20"; // bump on code edit
 const STATE_KEY="__viz_divergence_theorem";
 const QUALITY={
  pixelRatio:1,
- surfaceSegments:40,
- gridLines:10,
- gridSamples:46,
+ geomSegments:24,
  mapSize:154,
- targetFPS:30,
- overlayEveryNFrames:3
+ targetFPS:30
 };
 
 const previous=window[STATE_KEY];
@@ -107,6 +104,7 @@ function buildVisualization(root){
  let scene=null;
  let camera=null;
  let surfaceMesh=null;
+ let surfaceGeom=null;
  let keyLight=null;
 
  let lastWidth=-1;
@@ -143,7 +141,6 @@ function buildVisualization(root){
   lastHeight=-1;
   recalcRendererSize();
   render();
-  // reattachment may keep 1 idle WebGL context after note close until future build cleanup; intentional because idle context << reconstruction each keystroke.
  }
 
  function cleanup(){
@@ -160,6 +157,7 @@ function buildVisualization(root){
    const e=eventListeners[i];
    e.target.removeEventListener(e.type,e.listener,e.options);
   }
+  if(surfaceGeom&&typeof surfaceGeom.dispose==="function")surfaceGeom.dispose();
   for(const d of new Set(disposables)){
    if(d&&typeof d.dispose==="function")d.dispose();
   }
@@ -172,34 +170,55 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    UI
+    HUD
     ============================================================ */
 
  const hud=stage.createEl("div");
  hud.style.cssText=
   "position:absolute;left:10px;top:10px;z-index:10;pointer-events:none;" +
-  "padding:7px 9px;border-radius:9px;background:rgba(8,10,14,.48);" +
+  "padding:7px 9px;border-radius:9px;background:rgba(8,10,14,.52);" +
   "border:1px solid rgba(184,188,200,.16);" +
   "font:12px/1.34 ui-monospace,SFMono-Regular,Consolas,monospace;" +
-  "color:#E8EAF6;max-width:300px";
+  "color:#E8EAF6;max-width:356px";
 
  const theoremEl=hud.createEl("div");
  theoremEl.style.fontWeight="700";
+ setText(theoremEl,"\u222FS F\u00B7n dS = \u222D V \u2207\u00B7F dV");
 
- const surfIntegralEl=hud.createEl("div");
- surfIntegralEl.style.marginTop="3px";
+ /* botoes de geometria: linha logo abaixo da equacao */
+ const geomRow=hud.createEl("div");
+ geomRow.style.cssText="display:flex;gap:3px;margin-top:5px;pointer-events:auto";
 
- const volIntegralEl=hud.createEl("div");
+ const GEOM_COUNT=5;
+ const GEOM_LABELS=["Esfera","Cubo","Pir\u00E2mide","Cilindro","Irregular"];
+ const GEOM_KINDS=["sphere","cube","pyramid","cylinder","irregular"];
+ const GEOM_TITLES=[
+  "Esfera: superficie lisa, simetrica em toda direcao.",
+  "Cubo: seis faces planas, normais constantes em cada face.",
+  "Piramide de base quadrada: faces planas e arestas vivas.",
+  "Cilindro com eixo em x: duas tampas planas mais a lateral.",
+  "Solido irregular: superficie ondulada sem simetria."
+ ];
+
+ const geomButtons=new Array(GEOM_COUNT);
+ for(let i=0;i<GEOM_COUNT;i++){
+  const b=geomRow.createEl("button");
+  setText(b,GEOM_LABELS[i]);
+  b.title=GEOM_TITLES[i];
+  b.style.cssText=
+   "font:10px ui-monospace,monospace;color:#E8EAF6;" +
+   "background:rgba(23,28,56,.54);border:1px solid rgba(42,49,96,.9);" +
+   "border-radius:6px;height:21px;flex:1;cursor:pointer;padding:0 2px";
+  geomButtons[i]=b;
+ }
+
+ const geomStateEl=hud.createEl("div");
+ geomStateEl.style.cssText="margin-top:4px;color:#B8BCC8;font-size:11px";
 
  const selectedEl=hud.createEl("div");
  selectedEl.style.marginTop="4px";
 
- const statusEl=hud.createEl("div");
- statusEl.style.cssText="margin-top:3px;color:#B8BCC8";
-
- setText(theoremEl,"∯S F·n dS = ∭V (∇·F) dV");
- setText(selectedEl,"Clique na superfície para inspecionar F·n.");
- setText(statusEl,"Status: pausado");
+ setText(selectedEl,"Clique na superf\u00EDcie para inspecionar F\u00B7n.");
 
  /* ============================================================
     COLOR BAR
@@ -216,13 +235,13 @@ function buildVisualization(root){
  const colorCol=colorWrap.createEl("div");
  const colorTitle=colorCol.createEl("div");
  colorTitle.style.cssText="text-align:center;margin-bottom:4px";
- setText(colorTitle,"F·n");
+ setText(colorTitle,"F\u00B7n");
 
  const colorBar=colorCol.createEl("div");
  colorBar.style.cssText=
   "width:15px;height:118px;border-radius:7px;" +
   "border:1px solid rgba(255,255,255,.18);" +
-  "background:linear-gradient(to top,#E58B91 0%,#D5D7DE 50%,#7D9FE6 100%)";
+  "background:linear-gradient(to top,#FF4D57 0%,#B3B8C2 50%,#387AFF 100%)";
 
  const colorLabels=colorWrap.createEl("div");
  colorLabels.style.cssText="display:flex;flex-direction:column;justify-content:space-between;min-width:42px";
@@ -251,17 +270,17 @@ function buildVisualization(root){
   "2  Convergente",
   "3  Uniforme",
   "4  Paralelo c/ gradiente",
-  "5  Espalhado |F|=η",
-  "6  Incompressível"
+  "5  Espalhado |F|=\u03B7",
+  "6  Incompress\u00EDvel"
  ];
 
  const MODE_TITLES=[
-  "Fonte radial centrada dentro da esfera: divergência positiva.",
-  "Sumidouro radial centrado dentro da esfera: divergência negativa.",
-  "Campo uniforme e paralelo: divergência zero.",
-  "Linhas paralelas, sempre em +x, mas com módulo crescente em x: divergência positiva.",
-  "Campo espalhado com norma constante: direção varia, |F|=η.",
-  "Campo não uniforme incompressível: expansão em x compensada por contração em y e z."
+  "Fonte radial centrada na origem: divergencia positiva.",
+  "Sumidouro radial centrado na origem: divergencia negativa.",
+  "Campo uniforme e paralelo: divergencia zero.",
+  "Linhas paralelas, sempre em +x, com modulo crescente em x: divergencia positiva.",
+  "Campo espalhado com norma constante: direcao varia, |F|=eta.",
+  "Campo nao uniforme incompressivel: expansao em x compensada em y e z."
  ];
 
  const fieldButtons=new Array(MODE_COUNT);
@@ -278,30 +297,70 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    PLAY / RESET
+    TRANSFORM PANEL (6 botoes)
+    ============================================================ */
+
+ const xformPanel=stage.createEl("div");
+ xformPanel.style.cssText=
+  "position:absolute;left:196px;bottom:10px;z-index:12;pointer-events:auto;" +
+  "display:flex;flex-direction:column;gap:4px;padding:6px;border-radius:9px;" +
+  "background:rgba(8,10,14,.45);border:1px solid rgba(184,188,200,.15)";
+
+ const xformTitle=xformPanel.createEl("div");
+ xformTitle.style.cssText="padding:0 2px 1px 2px;font:11px ui-monospace,monospace;color:#B8BCC8";
+ setText(xformTitle,"Geometria");
+
+ const xformRow=xformPanel.createEl("div");
+ xformRow.style.cssText="display:flex;gap:4px";
+
+ function xformBtn(label,title){
+  const b=xformRow.createEl("button");
+  setText(b,label);
+  b.title=title;
+  b.style.cssText=
+   "font:13px ui-monospace,monospace;color:#E8EAF6;" +
+   "background:rgba(23,28,56,.62);border:1px solid #2A3160;" +
+   "border-radius:7px;width:26px;height:26px;cursor:pointer;padding:0";
+  return b;
+ }
+
+ const btnLeft =xformBtn("\u25C0","mover para -x");
+ const btnRight=xformBtn("\u25B6","mover para +x");
+ const btnUp   =xformBtn("\u25B2","mover para +z");
+ const btnDown =xformBtn("\u25BC","mover para -z");
+ const btnMinus=xformBtn("\u2212","diminuir");
+ const btnPlus =xformBtn("+","aumentar");
+ const btnRot  =xformBtn("\u21BB","girar a geometria em torno do proprio centro");
+
+ /* ============================================================
+    ROTATE / PLAY / RESET
     ============================================================ */
 
  let playBtnRef=null;
  let resetBtnRef=null;
+ const rotBtnRef=btnRot;
+
  {
-  const root=stage;
-  const bar = root.createEl("div");
-  bar.style.cssText = "position:absolute;right:10px;bottom:10px;display:flex;gap:6px";
-  function btn(t, title) {
-   const b = bar.createEl("button", { text: t });
-   b.title = title;
-   b.style.cssText = "font:13px ui-monospace,monospace;color:#E8EAF6;background:rgba(23,28,56,.7);border:1px solid #2A3160;border-radius:8px;width:30px;height:28px;cursor:pointer;padding:0";
+  const bar=stage.createEl("div");
+  bar.style.cssText=
+   "position:absolute;right:10px;bottom:10px;display:flex;gap:6px;" +
+   "z-index:15;pointer-events:auto";
+  function btn(t,title){
+   const b=bar.createEl("button",{text:t});
+   b.title=title;
+   b.style.cssText=
+    "font:13px ui-monospace,monospace;color:#E8EAF6;" +
+    "background:rgba(23,28,56,.7);border:1px solid #2A3160;" +
+    "border-radius:8px;width:30px;height:28px;cursor:pointer;padding:0";
    return b;
   }
-  const playBtn = btn("\u25B6", "animar/pausar"), resetBtn = btn("\u27F2", "recentrar");
-  bar.style.zIndex="15";
-  bar.style.pointerEvents="auto";
-  playBtnRef=playBtn;
-  resetBtnRef=resetBtn;
+  playBtnRef=btn("\u25B6","animar/pausar particulas");
+  resetBtnRef=btn("\u27F2","recentrar camera");
  }
 
  playBtnRef.disabled=true;
  resetBtnRef.disabled=true;
+ rotBtnRef.disabled=true;
 
  const loading=stage.createEl("div");
  loading.style.cssText=
@@ -309,40 +368,27 @@ function buildVisualization(root){
   "z-index:20;pointer-events:none;padding:7px 9px;border-radius:8px;" +
   "background:rgba(8,10,14,.58);border:1px solid rgba(184,188,200,.16);" +
   "font:11px ui-monospace,monospace;color:#B8BCC8";
- setText(loading,"carregando THREE r128…");
+ setText(loading,"carregando THREE r128\u2026");
 
  /* ============================================================
-    MATHEMATICS
+    CAMPOS VETORIAIS
     ============================================================ */
 
  const STEP_MS=1000/QUALITY.targetFPS;
- const FIELD_VERSION="g_v13";
+ const FIELD_VERSION="g_v20";
 
  const R=0.70;
 
  const RADIAL_A=1.15;
  const UNIFORM_F=1.00;
 
- /*
-    Campo 4:
-    linhas rigorosamente paralelas e SEMPRE apontando para +x.
-
-        Fx = Fmin + A exp(beta x)
-
-    Como Fmin > 0 e exp(beta x) > 0:
-        Fx > 0 para todo x real.
-
-    O módulo cresce continuamente em x.
- */
  const PAR_FMIN=0.08;
  const PAR_A=0.35;
  const PAR_BETA=1.15;
 
- /* Campo 5: espalhado com |F| constante = η */
  const ETA_CONST=1.00;
  const CONST_SOURCE_D=2.00;
 
- /* Campo 6: incompressível */
  const INCOMP_U=1.15;
  const INCOMP_A=0.35;
 
@@ -363,16 +409,10 @@ function buildVisualization(root){
  const VECTOR_MHALF=0.55;
 
  const PARAM_KEY=
-  `R=${R}`+
-  `|RAD=${RADIAL_A}`+
-  `|UNI=${UNIFORM_F}`+
-  `|PFMIN=${PAR_FMIN}`+
-  `|PA=${PAR_A}`+
-  `|PBETA=${PAR_BETA}`+
-  `|ETA=${ETA_CONST}`+
-  `|CMD=${CONST_SOURCE_D}`+
-  `|IU=${INCOMP_U}`+
-  `|IA=${INCOMP_A}`;
+  `R=${R}|RAD=${RADIAL_A}|UNI=${UNIFORM_F}` +
+  `|PFMIN=${PAR_FMIN}|PA=${PAR_A}|PBETA=${PAR_BETA}` +
+  `|ETA=${ETA_CONST}|CMD=${CONST_SOURCE_D}` +
+  `|IU=${INCOMP_U}|IA=${INCOMP_A}`;
 
  let activeMode=3;
 
@@ -382,7 +422,6 @@ function buildVisualization(root){
   const mode=modeOverride===undefined?activeMode:modeOverride;
   const r2=x*x+y*y+z*z;
 
-  /* 1: Divergente */
   if(mode===0){
    field.z=0.5*RADIAL_A*r2;
    if(withGradient){
@@ -394,7 +433,6 @@ function buildVisualization(root){
    return field;
   }
 
-  /* 2: Convergente */
   if(mode===1){
    field.z=-0.5*RADIAL_A*r2;
    if(withGradient){
@@ -406,7 +444,6 @@ function buildVisualization(root){
    return field;
   }
 
-  /* 3: Uniforme */
   if(mode===2){
    field.z=UNIFORM_F*x;
    if(withGradient){
@@ -418,53 +455,24 @@ function buildVisualization(root){
    return field;
   }
 
-  /* 4: Paralelo com gradiente, sempre em +x */
   if(mode===3){
    const ex=Math.exp(PAR_BETA*x);
-
-   /*
-      Potencial:
-          phi = Fmin*x + (A/beta) exp(beta*x)
-
-      portanto:
-          F = grad(phi)
-            = (Fmin + A exp(beta*x), 0, 0)
-   */
-   field.z=
-    PAR_FMIN*x+
-    (PAR_A/PAR_BETA)*ex;
-
+   field.z=PAR_FMIN*x+(PAR_A/PAR_BETA)*ex;
    if(withGradient){
-    field.gx=
-     PAR_FMIN+
-     PAR_A*ex;
-
+    field.gx=PAR_FMIN+PAR_A*ex;
     field.gy=0;
     field.gz=0;
-
-    /*
-       div F = dFx/dx
-             = A beta exp(beta*x)
-             > 0
-    */
-    field.div=
-     PAR_A*
-     PAR_BETA*
-     ex;
+    field.div=PAR_A*PAR_BETA*ex;
    }
-
    return field;
   }
 
-  /* 5: Espalhado com |F| = eta */
   if(mode===4){
    const dx=x+CONST_SOURCE_D;
    const rho2=dx*dx+y*y+z*z;
    const rho=Math.sqrt(rho2);
    const invRho=1/rho;
-
    field.z=ETA_CONST*rho;
-
    if(withGradient){
     field.gx=ETA_CONST*dx*invRho;
     field.gy=ETA_CONST*y*invRho;
@@ -474,7 +482,6 @@ function buildVisualization(root){
    return field;
   }
 
-  /* 6: Incompressível */
   field.z=INCOMP_U*x+INCOMP_A*(x*x-0.5*y*y-0.5*z*z);
   if(withGradient){
    field.gx=INCOMP_U+2*INCOMP_A*x;
@@ -485,29 +492,11 @@ function buildVisualization(root){
   return field;
  }
 
- const g=(x,y,z)=>evaluate(x,y,z,false).z;
- void g;
-
  function fieldScale(mode){
-  if(mode===0||mode===1){
-   return RADIAL_A*R;
-  }
-  if(mode===2){
-   return UNIFORM_F;
-  }
-  if(mode===3){
-   return (
-    PAR_FMIN+
-    PAR_A*
-    Math.exp(
-     PAR_BETA*
-     XMAX
-    )
-   );
-  }
-  if(mode===4){
-   return ETA_CONST;
-  }
+  if(mode===0||mode===1)return RADIAL_A*R;
+  if(mode===2)return UNIFORM_F;
+  if(mode===3)return PAR_FMIN+PAR_A*Math.exp(PAR_BETA*XMAX);
+  if(mode===4)return ETA_CONST;
   const fxMax=INCOMP_U+2*INCOMP_A*R;
   const transverse=INCOMP_A*R;
   return Math.sqrt(fxMax*fxMax+2*transverse*transverse);
@@ -517,62 +506,9 @@ function buildVisualization(root){
   return VECTOR_LMAX*m/(m+VECTOR_MHALF);
  }
 
- function exactBalance(mode){
-  if(mode===0){
-   return 4*Math.PI*RADIAL_A*R*R*R;
-  }
-  if(mode===1){
-   return -4*Math.PI*RADIAL_A*R*R*R;
-  }
-  if(mode===2){
-   return 0;
-  }
-  if(mode===3){
-   const q=
-    PAR_BETA*
-    R;
-
-   /*
-      Fmin é campo uniforme e sua contribuição líquida
-      em uma superfície fechada é zero.
-
-      Para a parcela A exp(beta*x):
-
-      ∭ div(F) dV
-      =
-      4πA/beta²
-      [ beta R cosh(beta R) - sinh(beta R) ]
-   */
-   return (
-    4*
-    Math.PI*
-    PAR_A*
-    (
-     q*
-     Math.cosh(q)-
-     Math.sinh(q)
-    )/
-    (
-     PAR_BETA*
-     PAR_BETA
-    )
-   );
-  }
-  if(mode===4){
-   return 8*Math.PI*ETA_CONST*R*R*R/(3*CONST_SOURCE_D);
-  }
-  return 0;
- }
-
  function formatSigned(v){
   if(Math.abs(v)<5e-12)return "0.000";
   return `${v>0?"+":""}${v.toFixed(3)}`;
- }
-
- function updateBalanceHUD(){
-  const b=exactBalance(activeMode);
-  setText(surfIntegralEl,`∯S F·n dS = ${formatSigned(b)}`);
-  setText(volIntegralEl,`∭V ∇·F dV = ${formatSigned(b)}`);
  }
 
  function hash01(n){
@@ -581,399 +517,603 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    THREE LOADER
+    GEOMETRIAS CANONICAS
+    Cada uma e um "triangle soup" (sem indices) com normais por
+    vertice. Todas sao estreladas em relacao a origem canonica,
+    o que garante que a decomposicao em tetraedros (centro -> face)
+    cubra exatamente o volume.
     ============================================================ */
 
- function showFatal(message){
-  if(state.cleaned||fatalShown)return;
-  fatalShown=true;
-  state.stop=true;
-  state.animating=false;
-  if(state.raf){
-   cancelAnimationFrame(state.raf);
-   state.raf=0;
-  }
-  playBtnRef.disabled=true;
-  resetBtnRef.disabled=true;
-  setText(playBtnRef,"\u25B6");
-  setText(statusEl,"Status: erro");
-  loading.remove();
-  const errorDiv=stage.createEl("div");
-  errorDiv.style.cssText=
-   "position:absolute;left:12px;right:12px;top:50%;transform:translateY(-50%);" +
-   "z-index:30;padding:10px;border-radius:8px;background:rgba(64,12,18,.88);" +
-   "border:1px solid rgba(240,58,58,.55);font:12px/1.4 ui-monospace,monospace;color:#FFE7EA";
-  setText(errorDiv,message);
+ const PYR_A=0.62;
+ const PYR_ZB=-0.45;
+ const PYR_ZT=1.00;
+
+ const CYL_HX=0.80;
+ const CYL_R=0.60;
+
+ /* meia-aresta escolhida para o cubo caber na mesma esfera unitaria
+    das outras geometrias: h*sqrt(3)=1 */
+ const CUBE_H=1/Math.sqrt(3);
+
+ function irregRadiusRaw(theta,phi){
+  return 1
+   +0.26*Math.sin(3*phi)*Math.sin(theta)
+   +0.20*Math.cos(2*theta)
+   +0.14*Math.cos(phi)*Math.sin(2*theta);
  }
 
- function normalizeThreeNamespace(candidate){
-  if(candidate&&String(candidate.REVISION)==="128"&&typeof candidate.WebGLRenderer==="function"&&typeof candidate.Scene==="function"&&typeof candidate.BufferGeometry==="function")return candidate;
-  if(candidate&&candidate.default&&String(candidate.default.REVISION)==="128"&&typeof candidate.default.WebGLRenderer==="function")return candidate.default;
-  if(candidate&&candidate.THREE&&String(candidate.THREE.REVISION)==="128"&&typeof candidate.THREE.WebGLRenderer==="function")return candidate.THREE;
-  return null;
- }
-
- function restoreThreeGlobal(hadOwnThree,savedThree){
-  if(hadOwnThree){
-   window.THREE=savedThree;
-  }else{
-   try{ delete window.THREE; }catch(_err){ window.THREE=undefined; }
-  }
- }
-
- function loadThreeViaClassicScript(){
-  return new Promise((resolve,reject)=>{
-   const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
-   const savedThree=window.THREE;
-   const oldScript=document.querySelector('script[data-viz-three-r128="1"]');
-   if(oldScript)oldScript.remove();
-   const script=document.head.createEl("script");
-   script.src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
-   script.async=true;
-   script.dataset.vizThreeR128="1";
-
-   const onLoad=()=>{
-    const loaded=normalizeThreeNamespace(window.THREE);
-    restoreThreeGlobal(hadOwnThree,savedThree);
-    if(loaded){
-     resolve(loaded);
-    }else{
-     reject(new Error("THREE r128 carregou, mas WebGLRenderer não ficou disponível."));
-    }
-   };
-
-   const onError=()=>{
-    restoreThreeGlobal(hadOwnThree,savedThree);
-    reject(new Error("Falha ao carregar THREE r128 pelo cdnjs."));
-   };
-
-   addListener(script,"load",onLoad,{once:true});
-   addListener(script,"error",onError,{once:true});
-  });
- }
-
- async function loadThreeViaIsolatedFallback(){
-  const url="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
-  const response=await fetch(url,{cache:"force-cache"});
-  if(!response.ok)throw new Error(`Fallback THREE r128 falhou: HTTP ${response.status}.`);
-  const source=await response.text();
-
-  const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
-  const savedThree=window.THREE;
-  let loaded=null;
-
-  try{
-   const execute=new Function("module","exports","define",`${source}\nreturn globalThis.THREE;`);
-   loaded=normalizeThreeNamespace(execute.call(window,undefined,undefined,undefined));
-  }finally{
-   restoreThreeGlobal(hadOwnThree,savedThree);
-  }
-
-  if(!loaded)throw new Error("THREE r128 foi obtido, mas WebGLRenderer continua indisponível.");
-  return loaded;
- }
-
- function createFreshThreePromise(){
-  const p=loadThreeViaClassicScript().catch(()=>loadThreeViaIsolatedFallback()).then(candidate=>{
-   const normalized=normalizeThreeNamespace(candidate);
-   if(!normalized)throw new Error("Namespace THREE r128 inválido.");
-   return normalized;
-  });
-  window.__threeR128LoadPromise=p;
-  threeLoadPromise=p;
-  return p;
- }
-
- function loadThreeR128(){
-  const direct=normalizeThreeNamespace(window.THREE);
-  if(direct){
-   if(!window.__threeR128LoadPromise)window.__threeR128LoadPromise=Promise.resolve(direct);
-   threeLoadPromise=window.__threeR128LoadPromise;
-   return Promise.resolve(threeLoadPromise).then(candidate=>normalizeThreeNamespace(candidate)||direct).catch(()=>direct);
-  }
-
-  const existing=window.__threeR128LoadPromise;
-  if(existing){
-   const checked=Promise.resolve(existing).then(candidate=>{
-    const normalized=normalizeThreeNamespace(candidate);
-    if(normalized)return normalized;
-    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
-    return createFreshThreePromise();
-   }).catch(()=>{
-    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
-    return createFreshThreePromise();
-   });
-   window.__threeR128LoadPromise=checked;
-   threeLoadPromise=checked;
-   return checked;
-  }
-
-  return createFreshThreePromise();
- }
-
- function trackObjectResources(obj){
-  obj.traverse(o=>{
-   if(o.geometry)trackDisposable(o.geometry);
-   const m=o.material;
-   if(Array.isArray(m)){
-    for(let i=0;i<m.length;i++){
-     trackDisposable(m[i]);
-     if(m[i]&&m[i].map)trackDisposable(m[i].map);
-    }
-   }else if(m){
-    trackDisposable(m);
-    if(m.map)trackDisposable(m.map);
+ const IRREG_MAX=cached(`irregMax|${FIELD_VERSION}`,()=>{
+  let m=0;
+  for(let i=0;i<=180;i++){
+   const th=Math.PI*i/180;
+   for(let j=0;j<=180;j++){
+    const ph=2*Math.PI*j/180;
+    const r=irregRadiusRaw(th,ph);
+    if(r>m)m=r;
    }
-  });
+  }
+  return m;
+ });
+
+ function irregRadius(theta,phi){
+  return irregRadiusRaw(theta,phi)/IRREG_MAX;
  }
 
- function freezeStatic(obj){
-  obj.traverse(o=>{
-   o.updateMatrix();
-   o.matrixAutoUpdate=false;
-  });
+ function makeSoup(){
+  return {p:[],n:[]};
  }
 
- function emphasizeArrow(arrow){
-  arrow.traverse(o=>{
-   o.renderOrder=12;
-   if(o.material){
-    o.material.transparent=true;
-    o.material.opacity=1;
-    o.material.depthTest=false;
-    o.material.depthWrite=false;
+ function pushTri(S,ax,ay,az,bx,by,bz,cx,cy,cz,nax,nay,naz,nbx,nby,nbz,ncx,ncy,ncz){
+  S.p.push(ax,ay,az,bx,by,bz,cx,cy,cz);
+  S.n.push(nax,nay,naz,nbx,nby,nbz,ncx,ncy,ncz);
+ }
+
+ function pushFlatTri(S,ax,ay,az,bx,by,bz,cx,cy,cz){
+  const e1x=bx-ax,e1y=by-ay,e1z=bz-az;
+  const e2x=cx-ax,e2y=cy-ay,e2z=cz-az;
+  let nx=e1y*e2z-e1z*e2y;
+  let ny=e1z*e2x-e1x*e2z;
+  let nz=e1x*e2y-e1y*e2x;
+  const m=Math.sqrt(nx*nx+ny*ny+nz*nz)||1;
+  nx/=m; ny/=m; nz/=m;
+  pushTri(S,ax,ay,az,bx,by,bz,cx,cy,cz,nx,ny,nz,nx,ny,nz,nx,ny,nz);
+ }
+
+ /* subdivide cada triangulo em 4, preservando as normais.
+    usado nas faces planas para dar resolucao de cor suficiente. */
+ function subdivideSoup(S,levels){
+  let cur=S;
+  for(let L=0;L<levels;L++){
+   const out=makeSoup();
+   const P=cur.p;
+   const N=cur.n;
+   for(let t=0;t<P.length;t+=9){
+    const ax=P[t],ay=P[t+1],az=P[t+2];
+    const bx=P[t+3],by=P[t+4],bz=P[t+5];
+    const cx=P[t+6],cy=P[t+7],cz=P[t+8];
+    const nax=N[t],nay=N[t+1],naz=N[t+2];
+    const nbx=N[t+3],nby=N[t+4],nbz=N[t+5];
+    const ncx=N[t+6],ncy=N[t+7],ncz=N[t+8];
+
+    const abx=0.5*(ax+bx),aby=0.5*(ay+by),abz=0.5*(az+bz);
+    const bcx=0.5*(bx+cx),bcy=0.5*(by+cy),bcz=0.5*(bz+cz);
+    const cax=0.5*(cx+ax),cay=0.5*(cy+ay),caz=0.5*(cz+az);
+
+    function mid(n1x,n1y,n1z,n2x,n2y,n2z){
+     let mx=0.5*(n1x+n2x),my=0.5*(n1y+n2y),mz=0.5*(n1z+n2z);
+     const m=Math.sqrt(mx*mx+my*my+mz*mz)||1;
+     return [mx/m,my/m,mz/m];
+    }
+    const nab=mid(nax,nay,naz,nbx,nby,nbz);
+    const nbc=mid(nbx,nby,nbz,ncx,ncy,ncz);
+    const nca=mid(ncx,ncy,ncz,nax,nay,naz);
+
+    pushTri(out,ax,ay,az,abx,aby,abz,cax,cay,caz,nax,nay,naz,nab[0],nab[1],nab[2],nca[0],nca[1],nca[2]);
+    pushTri(out,abx,aby,abz,bx,by,bz,bcx,bcy,bcz,nab[0],nab[1],nab[2],nbx,nby,nbz,nbc[0],nbc[1],nbc[2]);
+    pushTri(out,cax,cay,caz,bcx,bcy,bcz,cx,cy,cz,nca[0],nca[1],nca[2],nbc[0],nbc[1],nbc[2],ncx,ncy,ncz);
+    pushTri(out,abx,aby,abz,bcx,bcy,bcz,cax,cay,caz,nab[0],nab[1],nab[2],nbc[0],nbc[1],nbc[2],nca[0],nca[1],nca[2]);
    }
+   cur=out;
+  }
+  return cur;
+ }
+
+ /* Um poliedro inscrito subestima o volume da esfera lisa (erro ~0.7% em
+    SEG=24). SPH_K corrige o raio para que o volume do poliedro seja
+    exatamente 4pi/3, de modo que os numeros exibidos batam com as
+    formulas analiticas que o aluno calcula na mao. Mesma ideia em CYL_K
+    para a secao poligonal do cilindro. */
+ const SPH_K=cached(`sphK|${FIELD_VERSION}|SEG=${QUALITY.geomSegments}`,()=>{
+  const LAT=QUALITY.geomSegments;
+  const LON=LAT*2;
+  let v=0;
+  function pt(i,j){
+   const th=Math.PI*i/LAT;
+   const ph=2*Math.PI*j/LON;
+   const st=Math.sin(th);
+   return [st*Math.cos(ph),st*Math.sin(ph),Math.cos(th)];
+  }
+  function tv(a,b,c){
+   return (a[0]*(b[1]*c[2]-b[2]*c[1])-a[1]*(b[0]*c[2]-b[2]*c[0])+a[2]*(b[0]*c[1]-b[1]*c[0]))/6;
+  }
+  for(let i=0;i<LAT;i++){
+   for(let j=0;j<LON;j++){
+    const a=pt(i,j),b=pt(i+1,j),c=pt(i,j+1),d=pt(i+1,j+1);
+    if(i!==0)v+=tv(a,b,c);
+    if(i!==LAT-1)v+=tv(c,b,d);
+   }
+  }
+  return Math.cbrt((4*Math.PI/3)/Math.abs(v));
+ });
+
+ const CYL_K=cached(`cylK|${FIELD_VERSION}|SEG=${QUALITY.geomSegments}`,()=>{
+  const LON=QUALITY.geomSegments*2;
+  return Math.sqrt(Math.PI/((LON/2)*Math.sin(2*Math.PI/LON)));
+ });
+
+ function buildSphereSoup(){
+  const LAT=QUALITY.geomSegments;
+  const LON=LAT*2;
+  const S=makeSoup();
+  function pt(i,j){
+   const th=Math.PI*i/LAT;
+   const ph=2*Math.PI*j/LON;
+   const st=SPH_K*Math.sin(th);
+   return [st*Math.cos(ph),st*Math.sin(ph),SPH_K*Math.cos(th)];
+  }
+  for(let i=0;i<LAT;i++){
+   for(let j=0;j<LON;j++){
+    const a=pt(i,j),b=pt(i+1,j),c=pt(i,j+1),d=pt(i+1,j+1);
+    if(i!==0){
+     pushTri(S,a[0],a[1],a[2],b[0],b[1],b[2],c[0],c[1],c[2],
+               a[0],a[1],a[2],b[0],b[1],b[2],c[0],c[1],c[2]);
+    }
+    if(i!==LAT-1){
+     pushTri(S,c[0],c[1],c[2],b[0],b[1],b[2],d[0],d[1],d[2],
+               c[0],c[1],c[2],b[0],b[1],b[2],d[0],d[1],d[2]);
+    }
+   }
+  }
+  return S;
+ }
+
+ function irregPoint(th,ph){
+  const r=irregRadius(th,ph);
+  const st=Math.sin(th);
+  return [r*st*Math.cos(ph),r*st*Math.sin(ph),r*Math.cos(th)];
+ }
+
+ function irregNormal(th,ph){
+  const e=1e-3;
+  const t0=Math.min(Math.max(th,e),Math.PI-e);
+  const p1=irregPoint(t0+e,ph);
+  const p2=irregPoint(t0-e,ph);
+  const p3=irregPoint(t0,ph+e);
+  const p4=irregPoint(t0,ph-e);
+  const ux=p1[0]-p2[0],uy=p1[1]-p2[1],uz=p1[2]-p2[2];
+  const vx=p3[0]-p4[0],vy=p3[1]-p4[1],vz=p3[2]-p4[2];
+  let nx=uy*vz-uz*vy;
+  let ny=uz*vx-ux*vz;
+  let nz=ux*vy-uy*vx;
+  const m=Math.sqrt(nx*nx+ny*ny+nz*nz)||1;
+  nx/=m; ny/=m; nz/=m;
+  const p0=irregPoint(t0,ph);
+  if(nx*p0[0]+ny*p0[1]+nz*p0[2]<0){ nx=-nx; ny=-ny; nz=-nz; }
+  return [nx,ny,nz];
+ }
+
+ function buildIrregularSoup(){
+  const LAT=QUALITY.geomSegments;
+  const LON=LAT*2;
+  const S=makeSoup();
+  function pn(i,j){
+   const th=Math.PI*i/LAT;
+   const ph=2*Math.PI*j/LON;
+   return [irregPoint(th,ph),irregNormal(th,ph)];
+  }
+  for(let i=0;i<LAT;i++){
+   for(let j=0;j<LON;j++){
+    const A=pn(i,j),B=pn(i+1,j),C=pn(i,j+1),D=pn(i+1,j+1);
+    if(i!==0){
+     pushTri(S,A[0][0],A[0][1],A[0][2],B[0][0],B[0][1],B[0][2],C[0][0],C[0][1],C[0][2],
+               A[1][0],A[1][1],A[1][2],B[1][0],B[1][1],B[1][2],C[1][0],C[1][1],C[1][2]);
+    }
+    if(i!==LAT-1){
+     pushTri(S,C[0][0],C[0][1],C[0][2],B[0][0],B[0][1],B[0][2],D[0][0],D[0][1],D[0][2],
+               C[1][0],C[1][1],C[1][2],B[1][0],B[1][1],B[1][2],D[1][0],D[1][1],D[1][2]);
+    }
+   }
+  }
+  return S;
+ }
+
+ function buildCubeSoup(){
+  const h=CUBE_H;
+  const S=makeSoup();
+  /* cada face com os vertices em sentido anti-horario visto de fora */
+  function quad(v0,v1,v2,v3){
+   pushFlatTri(S,v0[0],v0[1],v0[2],v1[0],v1[1],v1[2],v2[0],v2[1],v2[2]);
+   pushFlatTri(S,v0[0],v0[1],v0[2],v2[0],v2[1],v2[2],v3[0],v3[1],v3[2]);
+  }
+  quad([ h,-h,-h],[ h, h,-h],[ h, h, h],[ h,-h, h]);
+  quad([-h, h,-h],[-h,-h,-h],[-h,-h, h],[-h, h, h]);
+  quad([ h, h,-h],[-h, h,-h],[-h, h, h],[ h, h, h]);
+  quad([-h,-h,-h],[ h,-h,-h],[ h,-h, h],[-h,-h, h]);
+  quad([-h,-h, h],[ h,-h, h],[ h, h, h],[-h, h, h]);
+  quad([ h,-h,-h],[-h,-h,-h],[-h, h,-h],[ h, h,-h]);
+  return subdivideSoup(S,3);
+ }
+
+ function buildPyramidSoup(){
+  const a=PYR_A;
+  const zb=PYR_ZB;
+  const S=makeSoup();
+  const c0=[ a, a,zb];
+  const c1=[-a, a,zb];
+  const c2=[-a,-a,zb];
+  const c3=[ a,-a,zb];
+  const ap=[0,0,PYR_ZT];
+  const sides=[[c0,c1],[c1,c2],[c2,c3],[c3,c0]];
+  for(let i=0;i<4;i++){
+   const u=sides[i][0],v=sides[i][1];
+   pushFlatTri(S,u[0],u[1],u[2],v[0],v[1],v[2],ap[0],ap[1],ap[2]);
+  }
+  pushFlatTri(S,c0[0],c0[1],c0[2],c2[0],c2[1],c2[2],c1[0],c1[1],c1[2]);
+  pushFlatTri(S,c0[0],c0[1],c0[2],c3[0],c3[1],c3[2],c2[0],c2[1],c2[2]);
+  return subdivideSoup(S,3);
+ }
+
+ function buildCylinderSoup(){
+  const LON=QUALITY.geomSegments*2;
+  const NX=8;
+  const S=makeSoup();
+  const CR=CYL_R*CYL_K;
+
+  for(let i=0;i<NX;i++){
+   const x0=-CYL_HX+2*CYL_HX*i/NX;
+   const x1=-CYL_HX+2*CYL_HX*(i+1)/NX;
+   for(let j=0;j<LON;j++){
+    const a0=2*Math.PI*j/LON;
+    const a1=2*Math.PI*(j+1)/LON;
+    const c0=Math.cos(a0),s0=Math.sin(a0);
+    const c1=Math.cos(a1),s1=Math.sin(a1);
+    const A=[x0,CR*c0,CR*s0];
+    const B=[x1,CR*c0,CR*s0];
+    const C=[x0,CR*c1,CR*s1];
+    const D=[x1,CR*c1,CR*s1];
+    pushTri(S,A[0],A[1],A[2],C[0],C[1],C[2],B[0],B[1],B[2],
+              0,c0,s0, 0,c1,s1, 0,c0,s0);
+    pushTri(S,C[0],C[1],C[2],D[0],D[1],D[2],B[0],B[1],B[2],
+              0,c1,s1, 0,c1,s1, 0,c0,s0);
+   }
+  }
+
+  const capS=makeSoup();
+  for(let j=0;j<LON;j++){
+   const a0=2*Math.PI*j/LON;
+   const a1=2*Math.PI*(j+1)/LON;
+   const c0=Math.cos(a0),s0=Math.sin(a0);
+   const c1=Math.cos(a1),s1=Math.sin(a1);
+   pushTri(capS,CYL_HX,0,0,CYL_HX,CR*c0,CR*s0,CYL_HX,CR*c1,CR*s1,
+                1,0,0, 1,0,0, 1,0,0);
+   pushTri(capS,-CYL_HX,0,0,-CYL_HX,CR*c1,CR*s1,-CYL_HX,CR*c0,CR*s0,
+                -1,0,0, -1,0,0, -1,0,0);
+  }
+  const capSub=subdivideSoup(capS,2);
+  for(let i=0;i<capSub.p.length;i++){
+   S.p.push(capSub.p[i]);
+   S.n.push(capSub.n[i]);
+  }
+  return S;
+ }
+
+ /* garante orientacao outward: se o volume assinado ficar negativo,
+    inverte o winding de todos os triangulos. */
+ function orientOutward(pos,nrm){
+  let vol=0;
+  for(let t=0;t<pos.length;t+=9){
+   const ax=pos[t],ay=pos[t+1],az=pos[t+2];
+   const bx=pos[t+3],by=pos[t+4],bz=pos[t+5];
+   const cx=pos[t+6],cy=pos[t+7],cz=pos[t+8];
+   vol+=(ax*(by*cz-bz*cy)-ay*(bx*cz-bz*cx)+az*(bx*cy-by*cx))/6;
+  }
+  if(vol>=0)return;
+  for(let t=0;t<pos.length;t+=9){
+   for(let k=0;k<3;k++){
+    const tmp=pos[t+3+k]; pos[t+3+k]=pos[t+6+k]; pos[t+6+k]=tmp;
+    const tn=nrm[t+3+k]; nrm[t+3+k]=nrm[t+6+k]; nrm[t+6+k]=tn;
+   }
+  }
+ }
+
+ function getCanonicalGeometry(kind){
+  return cached(`geom|${FIELD_VERSION}|${kind}|SEG=${QUALITY.geomSegments}`,()=>{
+   let S;
+   if(kind==="sphere")S=buildSphereSoup();
+   else if(kind==="cube")S=buildCubeSoup();
+   else if(kind==="pyramid")S=buildPyramidSoup();
+   else if(kind==="cylinder")S=buildCylinderSoup();
+   else S=buildIrregularSoup();
+
+   const pos=new Float32Array(S.p);
+   const nrm=new Float32Array(S.n);
+   orientOutward(pos,nrm);
+
+   let boundRadius=0;
+   for(let i=0;i<pos.length;i+=3){
+    const d=Math.sqrt(pos[i]*pos[i]+pos[i+1]*pos[i+1]+pos[i+2]*pos[i+2]);
+    if(d>boundRadius)boundRadius=d;
+   }
+
+   return {pos,nrm,vertexCount:pos.length/3,triCount:pos.length/9,boundRadius};
   });
+ }
+
+ function insideCanonical(kind,x,y,z){
+  if(kind==="sphere")return x*x+y*y+z*z<=SPH_K*SPH_K;
+  if(kind==="cube")return Math.abs(x)<=CUBE_H&&Math.abs(y)<=CUBE_H&&Math.abs(z)<=CUBE_H;
+  if(kind==="cylinder"){const cr=CYL_R*CYL_K;return Math.abs(x)<=CYL_HX&&(y*y+z*z)<=cr*cr;}
+  if(kind==="pyramid"){
+   if(z<PYR_ZB||z>PYR_ZT)return false;
+   const t=(PYR_ZT-z)/(PYR_ZT-PYR_ZB);
+   const half=PYR_A*t;
+   return Math.abs(x)<=half&&Math.abs(y)<=half;
+  }
+  const rho=Math.sqrt(x*x+y*y+z*z);
+  if(rho<1e-9)return true;
+  const th=Math.acos(Math.max(-1,Math.min(1,z/rho)));
+  const ph=Math.atan2(y,x);
+  return rho<=irregRadius(th,ph);
  }
 
  /* ============================================================
-    RAW CACHES
+    ESTADO DA TRANSFORMACAO
     ============================================================ */
 
- let surfaceColorArray=null;
- let surfaceColorAttr=null;
+ const SIZE_FACTORS=[1.00,0.60,0.30];
+ const SIZE_LABELS=["100%","60%","30%"];
+ const X_VIS=1.60;
+ const Z_VIS=1.25;
 
- function buildBaseRaw(){
-  const SEG=QUALITY.surfaceSegments;
-  const LAT=SEG;
-  const LON=SEG*2;
-  const VERTS=(LAT+1)*(LON+1);
+ let geomKindIdx=0;
+ let sizeIdx=0;
+ let xPosIdx=1;
+ let zPosIdx=1;
+ let rotating=false;
+ let rotAngle=0;
+ const ROT_SPEED=0.42;
 
-  const surfacePositions=cached(`surface|${FIELD_VERSION}|SEG=${SEG}|R=${R}`,()=>{
-   const a=new Float32Array(VERTS*3);
-   let w=0;
-   for(let i=0;i<=LAT;i++){
-    const theta=Math.PI*i/LAT;
-    const st=Math.sin(theta);
-    const ct=Math.cos(theta);
-    for(let j=0;j<=LON;j++){
-     const phi=2*Math.PI*j/LON;
-     a[w++]=R*st*Math.cos(phi);
-     a[w++]=R*st*Math.sin(phi);
-     a[w++]=R*ct;
-    }
-   }
-   return a;
-  });
+ let canon=null;
+ let worldPos=null;
+ let worldNrm=null;
+ let colorArr=null;
+ let dotArr=null;
 
-  const surfaceNormals=cached(`surfaceNormals|${FIELD_VERSION}|SEG=${SEG}|R=${R}`,()=>{
-   const n=new Float32Array(surfacePositions.length);
-   for(let i=0;i<n.length;i++)n[i]=surfacePositions[i]/R;
-   return n;
-  });
+ let posAttr=null;
+ let nrmAttr=null;
+ let colAttr=null;
 
-  const surfaceIndices=cached(`triangleIndices|${FIELD_VERSION}|SEG=${SEG}|LON=${LON}`,()=>{
-   const count=6*LON*(LAT-1);
-   const idx=new Uint16Array(count);
-   let w=0;
-   const stride=LON+1;
-   for(let i=0;i<LAT;i++){
-    for(let j=0;j<LON;j++){
-     const a=i*stride+j;
-     const b=a+stride;
-     const c=a+1;
-     const d=b+1;
-     if(i!==0){
-      idx[w++]=a; idx[w++]=b; idx[w++]=c;
-     }
-     if(i!==LAT-1){
-      idx[w++]=c; idx[w++]=b; idx[w++]=d;
-     }
-    }
-   }
-   return idx;
-  });
+ let centerX=0;
+ let centerZ=0;
+ let scaleCur=R;
 
-  const gridPositions=cached(`gridPositions|${FIELD_VERSION}|NX=${GRID_NX}|NY=${GRID_NY}|NZ=${GRID_NZ}|EXT=${FIELD_EXT}`,()=>{
-   const count=GRID_NX*GRID_NY*GRID_NZ;
-   const p=new Float32Array(count*3);
-   let w=0;
-   for(let iz=0;iz<GRID_NZ;iz++){
-    const z=-0.75*FIELD_EXT+(1.50*FIELD_EXT*iz/(GRID_NZ-1));
-    for(let iy=0;iy<GRID_NY;iy++){
-     const y=-FIELD_EXT+(2*FIELD_EXT*iy/(GRID_NY-1));
-     for(let ix=0;ix<GRID_NX;ix++){
-      const x=-1.15*FIELD_EXT+(2.30*FIELD_EXT*ix/(GRID_NX-1));
-      p[w++]=x;
-      p[w++]=y;
-      p[w++]=z;
-     }
-    }
-   }
-   return p;
-  });
+ let fluxValue=0;
+ let volValue=0;
+ let volumeValue=0;
+ let colorMaxAbs=1;
 
-  return {
-   surfacePositions,
-   surfaceNormals,
-   surfaceIndices,
-   gridPositions,
-   vertexCount:VERTS
-  };
+ function currentScale(){
+  return R*SIZE_FACTORS[sizeIdx];
  }
 
- const baseRaw=buildBaseRaw();
+ function boundR(){
+  return canon.boundRadius*currentScale();
+ }
 
- function getModeRaw(mode){
-  return cached(`modeRaw|${FIELD_VERSION}|mode=${mode}|${PARAM_KEY}|SEG=${QUALITY.surfaceSegments}|NX=${GRID_NX}|NY=${GRID_NY}|NZ=${GRID_NZ}|EXT=${FIELD_EXT}`,()=>{
-   const vertexCount=baseRaw.vertexCount;
-   const colors=new Float32Array(vertexCount*3);
-   const rawDot=new Float32Array(vertexCount);
-   let maxAbs=0;
+ /* esquerda: solido inteiro em x<=0, tangente ao plano x=0
+    centro:    centrado na origem
+    direita:   tangente ao limite visual em +x */
+ function xPositions(){
+  const rb=boundR();
+  return [-rb,0,X_VIS-rb];
+ }
 
-   for(let i=0;i<vertexCount;i++){
-    const j=i*3;
-    const x=baseRaw.surfacePositions[j];
-    const y=baseRaw.surfacePositions[j+1];
-    const z=baseRaw.surfacePositions[j+2];
-    const nx=baseRaw.surfaceNormals[j];
-    const ny=baseRaw.surfaceNormals[j+1];
-    const nz=baseRaw.surfaceNormals[j+2];
+ function zPositions(){
+  const rb=boundR();
+  const hi=Math.max(0,Z_VIS-rb);
+  return [-hi,0,hi];
+ }
 
-    // evaluate() reuses one shared object; consume fields immediately before the next evaluate().
-    evaluate(x,y,z,true,mode);
-    const dot=field.gx*nx+field.gy*ny+field.gz*nz;
-    rawDot[i]=dot;
+ function recomputeCenter(){
+  scaleCur=currentScale();
+  centerX=xPositions()[xPosIdx];
+  centerZ=zPositions()[zPosIdx];
+ }
 
-    const ad=Math.abs(dot);
-    if(ad>maxAbs)maxAbs=ad;
-   }
+ /* rotacao em torno do eixo y, passando pelo centro da geometria */
+ function rotApply(x,y,z,out){
+  const c=Math.cos(rotAngle);
+  const s=Math.sin(rotAngle);
+  out[0]=c*x+s*z;
+  out[1]=y;
+  out[2]=-s*x+c*z;
+ }
 
-   const inv=1/(maxAbs||1);
+ function rotApplyInv(x,y,z,out){
+  const c=Math.cos(rotAngle);
+  const s=Math.sin(rotAngle);
+  out[0]=c*x-s*z;
+  out[1]=y;
+  out[2]=s*x+c*z;
+ }
 
-   const neutralR=0.70;
-   const neutralG=0.72;
-   const neutralB=0.76;
-   const blueR=0.22;
-   const blueG=0.48;
-   const blueB=1.00;
-   const redR=1.00;
-   const redG=0.30;
-   const redB=0.34;
+ const tmp3=[0,0,0];
 
-   for(let i=0;i<vertexCount;i++){
-    const rel=rawDot[i]*inv;
-    const t=Math.pow(Math.abs(rel),0.62);
-    let r,gc,b;
-
-    if(rel>=0){
-      r=neutralR+(blueR-neutralR)*t;
-      gc=neutralG+(blueG-neutralG)*t;
-      b=neutralB+(blueB-neutralB)*t;
-    }else{
-      r=neutralR+(redR-neutralR)*t;
-      gc=neutralG+(redG-neutralG)*t;
-      b=neutralB+(redB-neutralB)*t;
-    }
-
-    const j=i*3;
-    colors[j]=r;
-    colors[j+1]=gc;
-    colors[j+2]=b;
-   }
-
-   const pointCount=baseRaw.gridPositions.length/3;
-   const arrows=new Float32Array(pointCount*18);
-   const scale=fieldScale(mode);
-   let w=0;
-
-   for(let i=0;i<pointCount;i++){
-    const j=i*3;
-    const x=baseRaw.gridPositions[j];
-    const y=baseRaw.gridPositions[j+1];
-    const z=baseRaw.gridPositions[j+2];
-
-    evaluate(x,y,z,true,mode);
-    const fx=field.gx;
-    const fy=field.gy;
-    const fz=field.gz;
-
-    const mag=Math.sqrt(fx*fx+fy*fy+fz*fz);
-    if(mag<=scale*1e-12){
-     for(let q=0;q<18;q+=3){
-      arrows[w++]=x;
-      arrows[w++]=y;
-      arrows[w++]=z;
-     }
-     continue;
-    }
-
-    const invMag=1/mag;
-    const dx=fx*invMag;
-    const dy=fy*invMag;
-    const dz=fz*invMag;
-
-    const L=0.90*saturatedLength(mag/scale);
-    const hx=x+L*dx;
-    const hy=y+L*dy;
-    const hz=z+L*dz;
-
-    let ax=0,ay=0,az=1;
-    if(Math.abs(dz)>0.86){
-     ay=1; az=0;
-    }
-
-    let ux=dy*az-dz*ay;
-    let uy=dz*ax-dx*az;
-    let uz=dx*ay-dy*ax;
-
-    const uMag=Math.sqrt(ux*ux+uy*uy+uz*uz);
-    ux/=uMag; uy/=uMag; uz/=uMag;
-
-    const headL=0.30*L;
-    const headW=0.13*L;
-
-    arrows[w++]=x; arrows[w++]=y; arrows[w++]=z;
-    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
-
-    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
-    arrows[w++]=hx-headL*dx+headW*ux;
-    arrows[w++]=hy-headL*dy+headW*uy;
-    arrows[w++]=hz-headL*dz+headW*uz;
-
-    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
-    arrows[w++]=hx-headL*dx-headW*ux;
-    arrows[w++]=hy-headL*dy-headW*uy;
-    arrows[w++]=hz-headL*dz-headW*uz;
-   }
-
-   return {colors,arrows,maxAbs};
-  });
+ function insideWorld(x,y,z){
+  const lx=(x-centerX)/scaleCur;
+  const ly=y/scaleCur;
+  const lz=(z-centerZ)/scaleCur;
+  rotApplyInv(lx,ly,lz,tmp3);
+  return insideCanonical(GEOM_KINDS[geomKindIdx],tmp3[0],tmp3[1],tmp3[2]);
  }
 
  /* ============================================================
-    MINIMAP (x horizontal, z vertical)
-    BASE(cache static) + TRAIL(empty) + VIEW
+    MUNDO + CORES
+    ============================================================ */
+
+ const NEUTRAL=[0.70,0.72,0.76];
+ const BLUE=[0.22,0.48,1.00];
+ const RED=[1.00,0.30,0.34];
+
+ function updateWorldGeometry(){
+  const n=canon.vertexCount;
+  const c=Math.cos(rotAngle);
+  const s=Math.sin(rotAngle);
+
+  for(let i=0;i<n;i++){
+   const j=i*3;
+   const px=canon.pos[j],py=canon.pos[j+1],pz=canon.pos[j+2];
+   const rx=c*px+s*pz;
+   const rz=-s*px+c*pz;
+   worldPos[j]=centerX+scaleCur*rx;
+   worldPos[j+1]=scaleCur*py;
+   worldPos[j+2]=centerZ+scaleCur*rz;
+
+   const nx=canon.nrm[j],ny=canon.nrm[j+1],nz=canon.nrm[j+2];
+   worldNrm[j]=c*nx+s*nz;
+   worldNrm[j+1]=ny;
+   worldNrm[j+2]=-s*nx+c*nz;
+  }
+ }
+
+ function updateSurfaceColors(){
+  const n=canon.vertexCount;
+  let maxAbs=0;
+  const buf=dotArr;
+
+  for(let i=0;i<n;i++){
+   const j=i*3;
+   evaluate(worldPos[j],worldPos[j+1],worldPos[j+2],true);
+   const d=field.gx*worldNrm[j]+field.gy*worldNrm[j+1]+field.gz*worldNrm[j+2];
+   buf[i]=d;
+   const ad=Math.abs(d);
+   if(ad>maxAbs)maxAbs=ad;
+  }
+
+  colorMaxAbs=maxAbs||1;
+  const inv=1/colorMaxAbs;
+
+  for(let i=0;i<n;i++){
+   const rel=buf[i]*inv;
+   const t=Math.pow(Math.abs(rel),0.62);
+   const tgt=rel>=0?BLUE:RED;
+   const j=i*3;
+   colorArr[j]=NEUTRAL[0]+(tgt[0]-NEUTRAL[0])*t;
+   colorArr[j+1]=NEUTRAL[1]+(tgt[1]-NEUTRAL[1])*t;
+   colorArr[j+2]=NEUTRAL[2]+(tgt[2]-NEUTRAL[2])*t;
+  }
+ }
+
+ /* ============================================================
+    INTEGRAIS NUMERICAS
+    superficie: regra de 3 pontos por triangulo (exata ate grau 2)
+    volume:     tetraedros centro->face, regra de 4 pontos
+    ============================================================ */
+
+ const TRI_Q=[
+  [2/3,1/6,1/6],
+  [1/6,2/3,1/6],
+  [1/6,1/6,2/3]
+ ];
+ const TET_A=0.5854101966249685;
+ const TET_B=0.1381966011250105;
+ const TET_Q=[
+  [TET_A,TET_B,TET_B,TET_B],
+  [TET_B,TET_A,TET_B,TET_B],
+  [TET_B,TET_B,TET_A,TET_B],
+  [TET_B,TET_B,TET_B,TET_A]
+ ];
+
+ function computeIntegrals(){
+  let flux=0;
+  let volInt=0;
+  let vol=0;
+
+  const P=worldPos;
+  const cx=centerX;
+  const cy=0;
+  const cz=centerZ;
+
+  for(let t=0;t<P.length;t+=9){
+   const ax=P[t],ay=P[t+1],az=P[t+2];
+   const bx=P[t+3],by=P[t+4],bz=P[t+5];
+   const gx=P[t+6],gy=P[t+7],gz=P[t+8];
+
+   const e1x=bx-ax,e1y=by-ay,e1z=bz-az;
+   const e2x=gx-ax,e2y=gy-ay,e2z=gz-az;
+   let nx=e1y*e2z-e1z*e2y;
+   let ny=e1z*e2x-e1x*e2z;
+   let nz=e1x*e2y-e1y*e2x;
+   const twoA=Math.sqrt(nx*nx+ny*ny+nz*nz);
+   if(twoA>1e-14){
+    const area=0.5*twoA;
+    nx/=twoA; ny/=twoA; nz/=twoA;
+    for(let q=0;q<3;q++){
+     const w=TRI_Q[q];
+     const qx=w[0]*ax+w[1]*bx+w[2]*gx;
+     const qy=w[0]*ay+w[1]*by+w[2]*gy;
+     const qz=w[0]*az+w[1]*bz+w[2]*gz;
+     evaluate(qx,qy,qz,true);
+     flux+=(field.gx*nx+field.gy*ny+field.gz*nz)*area/3;
+    }
+   }
+
+   const d0x=ax-cx,d0y=ay-cy,d0z=az-cz;
+   const d1x=bx-cx,d1y=by-cy,d1z=bz-cz;
+   const d2x=gx-cx,d2y=gy-cy,d2z=gz-cz;
+   const vt=(d0x*(d1y*d2z-d1z*d2y)-d0y*(d1x*d2z-d1z*d2x)+d0z*(d1x*d2y-d1y*d2x))/6;
+   vol+=vt;
+   if(Math.abs(vt)>1e-16){
+    for(let q=0;q<4;q++){
+     const w=TET_Q[q];
+     const qx=w[0]*cx+w[1]*ax+w[2]*bx+w[3]*gx;
+     const qy=w[0]*cy+w[1]*ay+w[2]*by+w[3]*gy;
+     const qz=w[0]*cz+w[1]*az+w[2]*bz+w[3]*gz;
+     evaluate(qx,qy,qz,true);
+     volInt+=field.div*vt/4;
+    }
+   }
+  }
+
+  fluxValue=flux;
+  volValue=volInt;
+  volumeValue=vol;
+ }
+
+ function updateBalanceHUD(){
+  /* as duas integrais sao calculadas de forma independente e coincidem ate
+     ~1e-5 relativo, entao um unico numero representa honestamente as duas. */
+  setText(theoremEl,
+   `\u222FS F\u00B7n dS = \u222D V \u2207\u00B7F dV = ${formatSigned(fluxValue)}`);
+  const xl=["tang. x=0","centro","limite x"][xPosIdx];
+  const zl=["abaixo","centro","acima"][zPosIdx];
+  setText(geomStateEl,
+   `${GEOM_LABELS[geomKindIdx]} \u00B7 ${SIZE_LABELS[sizeIdx]} \u00B7 ${xl} \u00B7 ${zl} \u00B7 V=${volumeValue.toFixed(3)}`);
+  setText(maxLabel,`+${colorMaxAbs.toFixed(2)}`);
+  setText(minLabel,`-${colorMaxAbs.toFixed(2)}`);
+ }
+
+ /* ============================================================
+    MINIMAPA: fundo = div F no corte y=0 (cache por modo)
+              overlay = contorno da secao + ponto selecionado
     ============================================================ */
 
  let mapBase=null;
- let mapTrailCanvas=null;
- let mapTrailCtx=null;
  let mapCanvas=null;
  let mapCtx=null;
  let overlayDirty=true;
 
- const MAP_EXT=1.55;
+ const MAP_EXT=1.75;
  const MAP_DISPLAY_SIZE=98;
 
  function mapX(x){
@@ -989,22 +1129,18 @@ function buildVisualization(root){
   const dz=z1-z0;
   const mag=Math.sqrt(dx*dx+dz*dz);
   if(mag<1e-6)return;
-
   const ux=dx/mag;
   const uz=dz/mag;
   const px=-uz;
   const pz=ux;
-
   const hl=4.4;
   const hw=2.6;
-
   ctx.beginPath();
   ctx.moveTo(x0,z0);
   ctx.lineTo(x1,z1);
   ctx.strokeStyle=color;
   ctx.lineWidth=1.35;
   ctx.stroke();
-
   ctx.beginPath();
   ctx.moveTo(x1,z1);
   ctx.lineTo(x1-hl*ux+hw*px,z1-hl*uz+hw*pz);
@@ -1015,70 +1151,58 @@ function buildVisualization(root){
  }
 
  function drawMiniAxes(ctx){
-  const ox=18;
-  const oy=QUALITY.mapSize-17;
-  drawMiniArrow(ctx,ox,oy,ox+20,oy,"rgba(255,255,255,.88)");
-  drawMiniArrow(ctx,ox,oy,ox,oy-20,"rgba(255,255,255,.88)");
-
+  const ox=17;
+  const oy=QUALITY.mapSize-16;
+  drawMiniArrow(ctx,ox,oy,ox+18,oy,"rgba(255,255,255,.88)");
+  drawMiniArrow(ctx,ox,oy,ox,oy-18,"rgba(255,255,255,.88)");
   ctx.fillStyle="rgba(255,255,255,.94)";
   ctx.font="bold 10px ui-monospace,monospace";
   ctx.textAlign="center";
   ctx.textBaseline="middle";
-  ctx.fillText("x",ox+27,oy);
-  ctx.fillText("z",ox,oy-27);
+  ctx.fillText("x",ox+25,oy);
+  ctx.fillText("z",ox,oy-25);
  }
 
  function traceMiniBranch(ctx,seedX,seedZ,direction,mode){
   let x=seedX;
   let z=seedZ;
-  const ds=0.045;
+  const ds=0.05;
   const scale=fieldScale(mode);
-
-  for(let step=0;step<105;step++){
-   if(Math.abs(x)>1.38||Math.abs(z)>1.38)break;
-
-   // evaluate() reuses the shared field; consume immediately.
+  for(let step=0;step<110;step++){
+   if(Math.abs(x)>1.70||Math.abs(z)>1.70)break;
    evaluate(x,0,z,true,mode);
    const fx0=field.gx;
    const fz0=field.gz;
    const mag0=Math.sqrt(fx0*fx0+fz0*fz0);
    if(mag0<=scale*1e-12)break;
-
    const ux0=direction*fx0/mag0;
    const uz0=direction*fz0/mag0;
-
    const mx=x+0.5*ds*ux0;
    const mz=z+0.5*ds*uz0;
-
    evaluate(mx,0,mz,true,mode);
    const fxm=field.gx;
    const fzm=field.gz;
    const magm=Math.sqrt(fxm*fxm+fzm*fzm);
    if(magm<=scale*1e-12)break;
-
    const x1=x+direction*ds*fxm/magm;
    const z1=z+direction*ds*fzm/magm;
-
    ctx.beginPath();
    ctx.moveTo(mapX(x),mapZ(z));
    ctx.lineTo(mapX(x1),mapZ(z1));
-   ctx.strokeStyle="rgba(17,180,255,.76)";
-   ctx.lineWidth=1.25;
+   ctx.strokeStyle="rgba(17,180,255,.62)";
+   ctx.lineWidth=1.1;
    ctx.stroke();
-
-   if(step===15||step===42||step===70){
-    if(direction>0){
-     drawMiniArrow(ctx,mapX(x),mapZ(z),mapX(x1),mapZ(z1),"rgba(17,180,255,.96)");
-    }else{
-     drawMiniArrow(ctx,mapX(x1),mapZ(z1),mapX(x),mapZ(z),"rgba(17,180,255,.96)");
-    }
+   if(step===20||step===55||step===88){
+    if(direction>0)drawMiniArrow(ctx,mapX(x),mapZ(z),mapX(x1),mapZ(z1),"rgba(17,180,255,.9)");
+    else drawMiniArrow(ctx,mapX(x1),mapZ(z1),mapX(x),mapZ(z),"rgba(17,180,255,.9)");
    }
-
    x=x1;
    z=z1;
   }
  }
 
+ /* fundo do minimapa: apenas o fundo escuro, as linhas de campo e os eixos.
+    A pintura do produto escalar vem depois, projetando a propria superficie. */
  function buildMinimapBase(mode){
   return cached(`minimapBase|${FIELD_VERSION}|mode=${mode}|SIZE=${QUALITY.mapSize}|EXT=${MAP_EXT}|${PARAM_KEY}`,()=>{
    let c;
@@ -1090,140 +1214,115 @@ function buildVisualization(root){
     c.height=QUALITY.mapSize;
     c.style.display="none";
    }
-
    const ctx=c.getContext("2d",{alpha:false});
    if(ctx){
-    const bgR=16,bgG=18,bgB=24;
-    const img=ctx.createImageData(QUALITY.mapSize,QUALITY.mapSize);
-    const data=img.data;
-    for(let i=0;i<data.length;i+=4){
-     data[i]=bgR;
-     data[i+1]=bgG;
-     data[i+2]=bgB;
-     data[i+3]=255;
-    }
-
-    const raw=getModeRaw(mode);
-    const maxAbs=raw.maxAbs||1;
-    const inv=1/maxAbs;
-
-    const neutralR=0.70;
-    const neutralG=0.72;
-    const neutralB=0.76;
-    const blueR=0.22;
-    const blueG=0.48;
-    const blueB=1.00;
-    const redR=1.00;
-    const redG=0.30;
-    const redB=0.34;
-
-    const alpha=0.72;
-    const s=QUALITY.mapSize;
-    const span=2*MAP_EXT/s;
-
-    for(let py=0;py<s;py++){
-     const z=MAP_EXT-(py+0.5)*span;
-     for(let px=0;px<s;px++){
-      const x=-MAP_EXT+(px+0.5)*span;
-      const rz2=x*x+z*z;
-      if(rz2>R*R)continue;
-
-      const yAbs=Math.sqrt(R*R-rz2);
-      const nx=x/R;
-      const nz=z/R;
-
-      evaluate(x,yAbs,z,true,mode);
-      const dot1=field.gx*nx+field.gy*(yAbs/R)+field.gz*nz;
-
-      evaluate(x,-yAbs,z,true,mode);
-      const dot2=field.gx*nx+field.gy*(-yAbs/R)+field.gz*nz;
-
-      const dot=0.5*(dot1+dot2);
-      const rel=dot*inv;
-      const t=Math.pow(Math.abs(rel),0.62);
-
-      let rr,gg,bb;
-      if(rel>=0){
-       rr=neutralR+(blueR-neutralR)*t;
-       gg=neutralG+(blueG-neutralG)*t;
-       bb=neutralB+(blueB-neutralB)*t;
-      }else{
-       rr=neutralR+(redR-neutralR)*t;
-       gg=neutralG+(redG-neutralG)*t;
-       bb=neutralB+(redB-neutralB)*t;
-      }
-
-      const R8=Math.round((1-alpha)*bgR+alpha*rr*255);
-      const G8=Math.round((1-alpha)*bgG+alpha*gg*255);
-      const B8=Math.round((1-alpha)*bgB+alpha*bb*255);
-
-      const idx=(py*s+px)*4;
-      data[idx]=R8;
-      data[idx+1]=G8;
-      data[idx+2]=B8;
-      data[idx+3]=255;
-     }
-    }
-
-    ctx.putImageData(img,0,0);
+    ctx.fillStyle="rgb(16,18,24)";
+    ctx.fillRect(0,0,QUALITY.mapSize,QUALITY.mapSize);
 
     if(mode===0||mode===1){
-     const N=10;
-     for(let i=0;i<N;i++){
-      const angle=2*Math.PI*i/N;
-      const sx=0.18*Math.cos(angle);
-      const sz=0.18*Math.sin(angle);
-      traceMiniBranch(ctx,sx,sz,1,mode);
-      traceMiniBranch(ctx,sx,sz,-1,mode);
+     for(let i=0;i<10;i++){
+      const angle=2*Math.PI*i/10;
+      traceMiniBranch(ctx,0.18*Math.cos(angle),0.18*Math.sin(angle),1,mode);
+      traceMiniBranch(ctx,0.18*Math.cos(angle),0.18*Math.sin(angle),-1,mode);
      }
     }else{
-      const seedZ0=-0.96;
-      const seedDZ=0.32;
-      for(let i=0;i<7;i++){
-       const sz=seedZ0+seedDZ*i;
-       traceMiniBranch(ctx,0,sz,1,mode);
-       traceMiniBranch(ctx,0,sz,-1,mode);
-      }
+     for(let i=0;i<7;i++){
+      const sz=-1.05+0.35*i;
+      traceMiniBranch(ctx,0,sz,1,mode);
+      traceMiniBranch(ctx,0,sz,-1,mode);
+     }
     }
-
-    const cx=mapX(0);
-    const cz=mapZ(0);
-    const rp=R*QUALITY.mapSize/(2*MAP_EXT);
-
-    ctx.beginPath();
-    ctx.arc(cx,cz,rp,0,Math.PI*2);
-    ctx.strokeStyle="rgba(255,255,255,.82)";
-    ctx.lineWidth=1.25;
-    ctx.stroke();
 
     drawMiniAxes(ctx);
    }
-
    if(c instanceof HTMLElement)c.remove();
    return c;
   });
  }
 
- function clearOverlayTrail(){
-  if(mapTrailCtx)mapTrailCtx.clearRect(0,0,QUALITY.mapSize,QUALITY.mapSize);
-  overlayDirty=true;
+ /* contorno da secao transversal em y=0, por marcha radial */
+ function drawSectionOutline(ctx){
+  const N=84;
+  const tMax=boundR()*1.35+1e-6;
+  ctx.beginPath();
+  let started=false;
+  for(let i=0;i<=N;i++){
+   const a=2*Math.PI*i/N;
+   const dx=Math.cos(a);
+   const dz=Math.sin(a);
+   let lo=0;
+   let hi=tMax;
+   if(!insideWorld(centerX,0,centerZ))break;
+   for(let k=0;k<20;k++){
+    const mid=0.5*(lo+hi);
+    if(insideWorld(centerX+mid*dx,0,centerZ+mid*dz))lo=mid;
+    else hi=mid;
+   }
+   const px=mapX(centerX+lo*dx);
+   const pz=mapZ(centerZ+lo*dz);
+   if(!started){ ctx.moveTo(px,pz); started=true; }
+   else ctx.lineTo(px,pz);
+  }
+  if(started){
+   ctx.closePath();
+   ctx.strokeStyle="rgba(255,255,255,.92)";
+   ctx.lineWidth=1.5;
+   ctx.stroke();
+  }
+ }
+
+ /* Projeta a superficie no plano (x,z) olhando ao longo de +y e pinta cada
+    triangulo com o seu F.n medio, na mesma escala da barra de cores 3D.
+    Desenha so as faces voltadas para +y: para um solido fechado elas cobrem
+    a projecao exatamente uma vez, o que dispensa ordenar por profundidade. */
+ function drawSurfaceProjection(ctx){
+  if(!worldPos||!dotArr)return;
+  const P=worldPos;
+  const N=worldNrm;
+  const inv=1/(colorMaxAbs||1);
+  ctx.save();
+  ctx.globalAlpha=0.9;
+  for(let t=0;t<P.length;t+=9){
+   const ny=N[t+1]+N[t+4]+N[t+7];
+   if(ny<=0)continue;
+   const vi=t/3;
+   const rel=Math.max(-1,Math.min(1,(dotArr[vi]+dotArr[vi+1]+dotArr[vi+2])*inv/3));
+   const w=Math.pow(Math.abs(rel),0.62);
+   const tgt=rel>=0?BLUE:RED;
+   const rr=Math.round(255*(NEUTRAL[0]+(tgt[0]-NEUTRAL[0])*w));
+   const gg=Math.round(255*(NEUTRAL[1]+(tgt[1]-NEUTRAL[1])*w));
+   const bb=Math.round(255*(NEUTRAL[2]+(tgt[2]-NEUTRAL[2])*w));
+   const col=`rgb(${rr},${gg},${bb})`;
+   ctx.beginPath();
+   ctx.moveTo(mapX(P[t]),mapZ(P[t+2]));
+   ctx.lineTo(mapX(P[t+3]),mapZ(P[t+5]));
+   ctx.lineTo(mapX(P[t+6]),mapZ(P[t+8]));
+   ctx.closePath();
+   ctx.fillStyle=col;
+   ctx.fill();
+   /* o stroke fecha as costuras de antialiasing entre triangulos vizinhos */
+   ctx.strokeStyle=col;
+   ctx.lineWidth=1;
+   ctx.stroke();
+  }
+  ctx.restore();
  }
 
  function drawOverlayView(){
-  if(!mapCtx||!mapBase||!mapTrailCanvas)return;
+  if(!mapCtx||!mapBase)return;
   mapCtx.drawImage(mapBase,0,0);
-  mapCtx.drawImage(mapTrailCanvas,0,0);
-
+  drawSurfaceProjection(mapCtx);
+  drawSectionOutline(mapCtx);
   if(selectedValid){
    mapCtx.beginPath();
-   mapCtx.arc(mapX(selectedX),mapZ(selectedZ),3.2,0,Math.PI*2);
+   mapCtx.arc(mapX(selWorld[0]),mapZ(selWorld[2]),3.2,0,Math.PI*2);
    mapCtx.fillStyle="#F03A3A";
    mapCtx.fill();
   }
  }
 
  /* ============================================================
-    SCENE STATE
+    ESTADO DA CENA
     ============================================================ */
 
  let fieldArrowGeom=null;
@@ -1241,14 +1340,14 @@ function buildVisualization(root){
  let particleDirtyMax=-1;
 
  let selectedPoint=null;
- let selectedPointMat=null;
  let selectedNormalArrow=null;
  let selectedFieldArrow=null;
 
  let selectedValid=false;
- let selectedX=R;
- let selectedY=0;
- let selectedZ=0;
+ const selLocal=[1,0,0];
+ const selLocalN=[1,0,0];
+ const selWorld=[0,0,0];
+ const selWorldN=[1,0,0];
 
  let raycaster=null;
  let rayHits=null;
@@ -1256,11 +1355,11 @@ function buildVisualization(root){
 
  let tmpDir=null;
  let tmpVec=null;
- let selectedN=null;
+ let tmpN=null;
 
  let cameraYaw=-0.58;
  let cameraPitch=0.40;
- let cameraDistance=4.80;
+ let cameraDistance=5.10;
  let pointerDown=false;
  let pointerMoved=false;
  let pointerLastX=0;
@@ -1321,61 +1420,73 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    SELECTED POINT
+    PONTO SELECIONADO
     ============================================================ */
 
  function setFieldArrow(arrow,x,y,z,fx,fy,fz){
   const mag=Math.sqrt(fx*fx+fy*fy+fz*fz);
   const scale=fieldScale(activeMode);
-
   arrow.position.set(x,y,z);
-
   if(mag<=scale*1e-12){
    arrow.visible=false;
    return;
   }
-
   tmpDir.set(fx/mag,fy/mag,fz/mag);
   arrow.setDirection(tmpDir);
-
   const L=1.6*saturatedLength(mag/scale);
   arrow.setLength(L,0.31*L,0.17*L);
   arrow.visible=true;
  }
 
- function updateSelectedSample(px,py,pz){
-  const inv=R/Math.sqrt(px*px+py*py+pz*pz);
-  selectedX=px*inv;
-  selectedY=py*inv;
-  selectedZ=pz*inv;
-  selectedValid=true;
+ function refreshSelection(){
+  if(!selectedValid||!selectedPoint)return;
+  const c=Math.cos(rotAngle);
+  const s=Math.sin(rotAngle);
 
-  const nx=selectedX/R;
-  const ny=selectedY/R;
-  const nz=selectedZ/R;
-  selectedN.set(nx,ny,nz);
+  const px=selLocal[0],py=selLocal[1],pz=selLocal[2];
+  selWorld[0]=centerX+scaleCur*(c*px+s*pz);
+  selWorld[1]=scaleCur*py;
+  selWorld[2]=centerZ+scaleCur*(-s*px+c*pz);
 
-  // evaluate() reuses one shared object; consume fields immediately before the next evaluate().
-  evaluate(selectedX,selectedY,selectedZ,true);
+  const nx=selLocalN[0],ny=selLocalN[1],nz=selLocalN[2];
+  selWorldN[0]=c*nx+s*nz;
+  selWorldN[1]=ny;
+  selWorldN[2]=-s*nx+c*nz;
 
-  const fx=field.gx;
-  const fy=field.gy;
-  const fz=field.gz;
-  const dot=fx*nx+fy*ny+fz*nz;
+  evaluate(selWorld[0],selWorld[1],selWorld[2],true);
+  const fx=field.gx,fy=field.gy,fz=field.gz;
+  const dot=fx*selWorldN[0]+fy*selWorldN[1]+fz*selWorldN[2];
 
-  selectedPoint.position.set(selectedX,selectedY,selectedZ);
+  selectedPoint.position.set(selWorld[0],selWorld[1],selWorld[2]);
   selectedPoint.visible=true;
 
-  selectedNormalArrow.position.set(selectedX,selectedY,selectedZ);
-  selectedNormalArrow.setDirection(selectedN);
+  tmpN.set(selWorldN[0],selWorldN[1],selWorldN[2]);
+  selectedNormalArrow.position.set(selWorld[0],selWorld[1],selWorld[2]);
+  selectedNormalArrow.setDirection(tmpN);
   selectedNormalArrow.setLength(0.30,0.10,0.06);
   selectedNormalArrow.visible=true;
 
-  setFieldArrow(selectedFieldArrow,selectedX,selectedY,selectedZ,fx,fy,fz);
+  setFieldArrow(selectedFieldArrow,selWorld[0],selWorld[1],selWorld[2],fx,fy,fz);
 
-  selectedEl.style.color=dot>=0?"#7D9FE6":"#E58B91";
-  setText(selectedEl,`F·n(P) = ${formatSigned(dot)}`);
+  selectedEl.style.color=dot>=0?"#387AFF":"#FF4D57";
+  setText(selectedEl,`F\u00B7n(P) = ${formatSigned(dot)}`);
   overlayDirty=true;
+ }
+
+ function selectFromWorld(px,py,pz,nx,ny,nz){
+  const c=Math.cos(rotAngle);
+  const s=Math.sin(rotAngle);
+  const lx=(px-centerX)/scaleCur;
+  const ly=py/scaleCur;
+  const lz=(pz-centerZ)/scaleCur;
+  selLocal[0]=c*lx-s*lz;
+  selLocal[1]=ly;
+  selLocal[2]=s*lx+c*lz;
+  selLocalN[0]=c*nx-s*nz;
+  selLocalN[1]=ny;
+  selLocalN[2]=s*nx+c*nz;
+  selectedValid=true;
+  refreshSelection();
  }
 
  function clearSelection(){
@@ -1383,13 +1494,13 @@ function buildVisualization(root){
   if(selectedPoint)selectedPoint.visible=false;
   if(selectedNormalArrow)selectedNormalArrow.visible=false;
   if(selectedFieldArrow)selectedFieldArrow.visible=false;
-  setText(selectedEl,"Clique na superfície para inspecionar F·n.");
+  setText(selectedEl,"Clique na superf\u00EDcie para inspecionar F\u00B7n.");
   selectedEl.style.color="#E8EAF6";
   overlayDirty=true;
  }
 
  /* ============================================================
-    PARTICLES
+    PARTICULAS
     ============================================================ */
 
  function hashSample(index,offset){
@@ -1399,14 +1510,12 @@ function buildVisualization(root){
  function resetParticle(i,initial){
   const count=particleRespawnCount[i];
   particleRespawnCount[i]=count+1;
-
   const seed=i+count*19;
   const h1=hashSample(seed,0.11);
   const h2=hashSample(seed,0.29);
   const h3=hashSample(seed,0.47);
   const h4=hashSample(seed,0.73);
   const h5=hashSample(seed,0.91);
-
   const dst=i*3;
   let x=0,y=0,z=0;
 
@@ -1433,11 +1542,9 @@ function buildVisualization(root){
    const maxR=inner?0.58:1.05;
    const rr=maxR*Math.sqrt(h2);
    const phi=2*Math.PI*h3;
-
    x=initial?(XMIN+(XMAX-XMIN)*h4):(XMIN-0.08*h4);
    y=rr*Math.cos(phi);
    z=rr*Math.sin(phi);
-
    particleLife[i]=92+Math.floor(72*h5);
   }
 
@@ -1446,37 +1553,32 @@ function buildVisualization(root){
   particlePositions[dst+2]=z;
   particleAge[i]=0;
   particleSpeed[i]=0.78+0.42*h5;
-
   if(i<particleDirtyMin)particleDirtyMin=i;
   if(i>particleDirtyMax)particleDirtyMax=i;
  }
 
  function resetAllParticles(){
   for(let i=0;i<PARTICLE_COUNT;i++)resetParticle(i,true);
-  clearOverlayTrail();
+  overlayDirty=true;
  }
 
  function simulateStep(){
   const baseH=(STEP_MS/1000)*FLOW_SPEED;
-
   for(let i=0;i<PARTICLE_COUNT;i++){
    const dst=i*3;
    const oldX=particlePositions[dst];
    const oldY=particlePositions[dst+1];
    const oldZ=particlePositions[dst+2];
 
-   // EVAL_ORDER: F is evaluated at the current algorithmic point before position update.
    evaluate(oldX,oldY,oldZ,true);
    const fx=field.gx;
    const fy=field.gy;
    const fz=field.gz;
 
    const h=baseH*particleSpeed[i];
-
    const newX=oldX+h*fx;
    const newY=oldY+h*fy;
    const newZ=oldZ+h*fz;
-
    particleAge[i]++;
 
    const radius2=newX*newX+newY*newY+newZ*newZ;
@@ -1487,10 +1589,6 @@ function buildVisualization(root){
    }else if(activeMode===1){
     respawn=radius2<0.035*0.035||particleAge[i]>=particleLife[i];
    }else if(activeMode===3){
-    // Campo 4: Fx>0 em todo ponto, mas |F| é pequeno perto de XMIN, então a
-    // travessia completa leva ~200–290 passos — bem mais que a vida (92–164),
-    // que matava as partículas justamente sobre a esfera. Aqui o respawn é
-    // disparado só pela saída geométrica (garantida, pois Fx>0), sem limite de idade.
     respawn=newX>XMAX||newX<XMIN-0.25||Math.abs(newY)>YLIM||Math.abs(newZ)>ZLIM;
    }else{
     respawn=newX>XMAX||newX<XMIN-0.25||Math.abs(newY)>YLIM||Math.abs(newZ)>ZLIM||particleAge[i]>=particleLife[i];
@@ -1504,52 +1602,195 @@ function buildVisualization(root){
    particlePositions[dst]=newX;
    particlePositions[dst+1]=newY;
    particlePositions[dst+2]=newZ;
-
    if(i<particleDirtyMin)particleDirtyMin=i;
    if(i>particleDirtyMax)particleDirtyMax=i;
   }
  }
 
  /* ============================================================
-    FIELD SWITCHING
+    SETAS DE CAMPO (grade fixa, so depende do modo)
     ============================================================ */
+
+ function getArrowRaw(mode){
+  return cached(`arrows|${FIELD_VERSION}|mode=${mode}|${PARAM_KEY}|NX=${GRID_NX}|NY=${GRID_NY}|NZ=${GRID_NZ}|EXT=${FIELD_EXT}`,()=>{
+   const pts=[];
+   for(let iz=0;iz<GRID_NZ;iz++){
+    const z=-0.75*FIELD_EXT+(1.50*FIELD_EXT*iz/(GRID_NZ-1));
+    for(let iy=0;iy<GRID_NY;iy++){
+     const y=-FIELD_EXT+(2*FIELD_EXT*iy/(GRID_NY-1));
+     for(let ix=0;ix<GRID_NX;ix++){
+      const x=-1.15*FIELD_EXT+(2.30*FIELD_EXT*ix/(GRID_NX-1));
+      pts.push(x,y,z);
+     }
+    }
+   }
+   const pointCount=pts.length/3;
+   const arrows=new Float32Array(pointCount*18);
+   const scale=fieldScale(mode);
+   let w=0;
+   for(let i=0;i<pointCount;i++){
+    const j=i*3;
+    const x=pts[j],y=pts[j+1],z=pts[j+2];
+    evaluate(x,y,z,true,mode);
+    const fx=field.gx,fy=field.gy,fz=field.gz;
+    const mag=Math.sqrt(fx*fx+fy*fy+fz*fz);
+    if(mag<=scale*1e-12){
+     for(let q=0;q<18;q+=3){ arrows[w++]=x; arrows[w++]=y; arrows[w++]=z; }
+     continue;
+    }
+    const invMag=1/mag;
+    const dx=fx*invMag,dy=fy*invMag,dz=fz*invMag;
+    const L=0.90*saturatedLength(mag/scale);
+    const hx=x+L*dx,hy=y+L*dy,hz=z+L*dz;
+    let ax=0,ay=0,az=1;
+    if(Math.abs(dz)>0.86){ ay=1; az=0; }
+    let ux=dy*az-dz*ay;
+    let uy=dz*ax-dx*az;
+    let uz=dx*ay-dy*ax;
+    const uMag=Math.sqrt(ux*ux+uy*uy+uz*uz)||1;
+    ux/=uMag; uy/=uMag; uz/=uMag;
+    const headL=0.30*L;
+    const headW=0.13*L;
+    arrows[w++]=x; arrows[w++]=y; arrows[w++]=z;
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+    arrows[w++]=hx-headL*dx+headW*ux;
+    arrows[w++]=hy-headL*dy+headW*uy;
+    arrows[w++]=hz-headL*dz+headW*uz;
+    arrows[w++]=hx; arrows[w++]=hy; arrows[w++]=hz;
+    arrows[w++]=hx-headL*dx-headW*ux;
+    arrows[w++]=hy-headL*dy-headW*uy;
+    arrows[w++]=hz-headL*dz-headW*uz;
+   }
+   return arrows;
+  });
+ }
+
+ /* ============================================================
+    APLICAR ESTADO
+    ============================================================ */
+
+ function rebuildMeshBuffers(){
+  const kind=GEOM_KINDS[geomKindIdx];
+  canon=getCanonicalGeometry(kind);
+  const n=canon.vertexCount;
+
+  worldPos=new Float32Array(n*3);
+  worldNrm=new Float32Array(n*3);
+  colorArr=new Float32Array(n*3);
+  dotArr=new Float32Array(n);
+
+  if(surfaceGeom){
+   surfaceMesh.geometry=null;
+   surfaceGeom.dispose();
+  }
+
+  surfaceGeom=new T.BufferGeometry();
+  posAttr=new T.BufferAttribute(worldPos,3);
+  nrmAttr=new T.BufferAttribute(worldNrm,3);
+  colAttr=new T.BufferAttribute(colorArr,3);
+  posAttr.setUsage(T.DynamicDrawUsage);
+  nrmAttr.setUsage(T.DynamicDrawUsage);
+  colAttr.setUsage(T.DynamicDrawUsage);
+  surfaceGeom.setAttribute("position",posAttr);
+  surfaceGeom.setAttribute("normal",nrmAttr);
+  surfaceGeom.setAttribute("color",colAttr);
+  surfaceGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),4);
+  surfaceMesh.geometry=surfaceGeom;
+ }
+
+ function applyGeometryState(recomputeIntegrals){
+  recomputeCenter();
+  updateWorldGeometry();
+  updateSurfaceColors();
+  posAttr.needsUpdate=true;
+  nrmAttr.needsUpdate=true;
+  colAttr.needsUpdate=true;
+  if(recomputeIntegrals){
+   computeIntegrals();
+   updateBalanceHUD();
+  }
+  if(selectedValid)refreshSelection();
+  overlayDirty=true;
+ }
+
+ function updateGeomButtonStyles(){
+  for(let i=0;i<GEOM_COUNT;i++){
+   const on=i===geomKindIdx;
+   geomButtons[i].style.background=on?"rgba(44,232,196,.18)":"rgba(23,28,56,.54)";
+   geomButtons[i].style.borderColor=on?"rgba(44,232,196,.72)":"rgba(42,49,96,.9)";
+   geomButtons[i].style.color=on?"#FFFFFF":"#E8EAF6";
+  }
+ }
+
+ function updateXformButtonStyles(){
+  btnLeft.style.opacity=xPosIdx>0?"1":".38";
+  btnRight.style.opacity=xPosIdx<2?"1":".38";
+  btnDown.style.opacity=zPosIdx>0?"1":".38";
+  btnUp.style.opacity=zPosIdx<2?"1":".38";
+  btnMinus.style.opacity=sizeIdx<2?"1":".38";
+  btnPlus.style.opacity=sizeIdx>0?"1":".38";
+  rotBtnRef.style.background=rotating?"rgba(44,232,196,.22)":"rgba(23,28,56,.62)";
+  rotBtnRef.style.borderColor=rotating?"rgba(44,232,196,.72)":"#2A3160";
+ }
 
  function updateModeButtonStyles(){
   for(let i=0;i<MODE_COUNT;i++){
-   const active=i===activeMode;
-   fieldButtons[i].style.background=active?"rgba(44,232,196,.18)":"rgba(23,28,56,.54)";
-   fieldButtons[i].style.borderColor=active?"rgba(44,232,196,.72)":"rgba(42,49,96,.9)";
-   fieldButtons[i].style.color=active?"#FFFFFF":"#E8EAF6";
+   const on=i===activeMode;
+   fieldButtons[i].style.background=on?"rgba(44,232,196,.18)":"rgba(23,28,56,.54)";
+   fieldButtons[i].style.borderColor=on?"rgba(44,232,196,.72)":"rgba(42,49,96,.9)";
+   fieldButtons[i].style.color=on?"#FFFFFF":"#E8EAF6";
   }
+ }
+
+ function setGeometry(idx){
+  if(idx===geomKindIdx)return;
+  geomKindIdx=idx;
+  clearSelection();
+  rebuildMeshBuffers();
+  applyGeometryState(true);
+  updateGeomButtonStyles();
+  updateXformButtonStyles();
+  render();
  }
 
  function applyMode(mode){
   activeMode=mode;
-  const raw=getModeRaw(activeMode);
-
-  surfaceColorArray.set(raw.colors);
-  surfaceColorAttr.updateRange.offset=0;
-  surfaceColorAttr.updateRange.count=surfaceColorArray.length;
-  surfaceColorAttr.needsUpdate=true;
-
-  fieldArrowArray.set(raw.arrows);
+  fieldArrowArray.set(getArrowRaw(mode));
   fieldArrowAttr.updateRange.offset=0;
   fieldArrowAttr.updateRange.count=fieldArrowArray.length;
   fieldArrowAttr.needsUpdate=true;
-
-  setText(maxLabel,`+${raw.maxAbs.toFixed(2)}`);
-  setText(minLabel,`-${raw.maxAbs.toFixed(2)}`);
-
   mapBase=buildMinimapBase(activeMode);
   resetAllParticles();
-  updateBalanceHUD();
+  applyGeometryState(true);
   updateModeButtonStyles();
+  render();
+ }
 
-  if(selectedValid){
-   updateSelectedSample(selectedX,selectedY,selectedZ);
-  }
+ function stepX(d){
+  const next=xPosIdx+d;
+  if(next<0||next>2)return;
+  xPosIdx=next;
+  applyGeometryState(true);
+  updateXformButtonStyles();
+  render();
+ }
 
-  overlayDirty=true;
+ function stepZ(d){
+  const next=zPosIdx+d;
+  if(next<0||next>2)return;
+  zPosIdx=next;
+  applyGeometryState(true);
+  updateXformButtonStyles();
+  render();
+ }
+
+ function stepSize(d){
+  const next=sizeIdx+d;
+  if(next<0||next>2)return;
+  sizeIdx=next;
+  applyGeometryState(true);
+  updateXformButtonStyles();
   render();
  }
 
@@ -1558,23 +1799,11 @@ function buildVisualization(root){
     ============================================================ */
 
  function canAnimate(){
-  return state.animating&&state.visible&&document.visibilityState==="visible"&&!state.stop;
+  return (state.animating||rotating)&&state.visible&&document.visibilityState==="visible"&&!state.stop;
  }
 
  function updatePlayStatus(){
-  setText(playBtnRef,state.animating?"❚❚":"\u25B6");
-
-  if(state.stop){
-   setText(statusEl,"Status: parado");
-  }else if(!state.animating){
-   setText(statusEl,"Status: pausado");
-  }else if(!state.visible){
-   setText(statusEl,"Status: animação armada; fora da viewport");
-  }else if(document.visibilityState!=="visible"){
-   setText(statusEl,"Status: animação armada; aba oculta");
-  }else{
-   setText(statusEl,"Status: animando");
-  }
+  setText(playBtnRef,state.animating?"\u275A\u275A":"\u25B6");
  }
 
  function stopRaf(){
@@ -1591,6 +1820,8 @@ function buildVisualization(root){
   state.raf=requestAnimationFrame(frame);
  }
 
+ let rotFrameCount=0;
+
  function frame(now){
   state.raf=0;
   if(!canAnimate())return;
@@ -1603,17 +1834,26 @@ function buildVisualization(root){
 
   let delta=now-state.lastTime;
   state.lastTime=now;
-
-  // this is only a scheduler catch-up guard; with the current exposed controls it is inert as a physical safety cap.
   if(delta>STEP_MS*4)delta=STEP_MS*4;
 
-  state.accumulator+=delta;
-  if(state.accumulator>STEP_MS*4)state.accumulator=STEP_MS*4;
-
   let advanced=false;
-  while(state.accumulator>=STEP_MS){
-   simulateStep();
-   state.accumulator-=STEP_MS;
+
+  if(state.animating){
+   state.accumulator+=delta;
+   if(state.accumulator>STEP_MS*4)state.accumulator=STEP_MS*4;
+   while(state.accumulator>=STEP_MS){
+    simulateStep();
+    state.accumulator-=STEP_MS;
+    advanced=true;
+   }
+  }
+
+  if(rotating){
+   rotAngle+=ROT_SPEED*delta/1000;
+   if(rotAngle>2*Math.PI)rotAngle-=2*Math.PI;
+   rotFrameCount++;
+   // medido em ~0.5 ms/quadro: da para recalcular as integrais a cada 2 quadros.
+   applyGeometryState(rotFrameCount%2===0);
    advanced=true;
   }
 
@@ -1622,15 +1862,166 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    AXIS LABEL
+    LOADER THREE
     ============================================================ */
+
+ function showFatal(message){
+  if(state.cleaned||fatalShown)return;
+  fatalShown=true;
+  state.stop=true;
+  state.animating=false;
+  rotating=false;
+  if(state.raf){
+   cancelAnimationFrame(state.raf);
+   state.raf=0;
+  }
+  playBtnRef.disabled=true;
+  resetBtnRef.disabled=true;
+  rotBtnRef.disabled=true;
+  setText(playBtnRef,"\u25B6");
+  loading.remove();
+  const errorDiv=stage.createEl("div");
+  errorDiv.style.cssText=
+   "position:absolute;left:12px;right:12px;top:50%;transform:translateY(-50%);" +
+   "z-index:30;padding:10px;border-radius:8px;background:rgba(64,12,18,.88);" +
+   "border:1px solid rgba(240,58,58,.55);font:12px/1.4 ui-monospace,monospace;color:#FFE7EA";
+  setText(errorDiv,message);
+ }
+
+ function normalizeThreeNamespace(candidate){
+  if(candidate&&String(candidate.REVISION)==="128"&&typeof candidate.WebGLRenderer==="function"&&typeof candidate.Scene==="function"&&typeof candidate.BufferGeometry==="function")return candidate;
+  if(candidate&&candidate.default&&String(candidate.default.REVISION)==="128"&&typeof candidate.default.WebGLRenderer==="function")return candidate.default;
+  if(candidate&&candidate.THREE&&String(candidate.THREE.REVISION)==="128"&&typeof candidate.THREE.WebGLRenderer==="function")return candidate.THREE;
+  return null;
+ }
+
+ function restoreThreeGlobal(hadOwnThree,savedThree){
+  if(hadOwnThree){
+   window.THREE=savedThree;
+  }else{
+   try{ delete window.THREE; }catch(_err){ window.THREE=undefined; }
+  }
+ }
+
+ function loadThreeViaClassicScript(){
+  return new Promise((resolve,reject)=>{
+   const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
+   const savedThree=window.THREE;
+   const oldScript=document.querySelector('script[data-viz-three-r128="1"]');
+   if(oldScript)oldScript.remove();
+   const script=document.head.createEl("script");
+   script.src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+   script.async=true;
+   script.dataset.vizThreeR128="1";
+   const onLoad=()=>{
+    const loaded=normalizeThreeNamespace(window.THREE);
+    restoreThreeGlobal(hadOwnThree,savedThree);
+    if(loaded)resolve(loaded);
+    else reject(new Error("THREE r128 carregou, mas WebGLRenderer nao ficou disponivel."));
+   };
+   const onError=()=>{
+    restoreThreeGlobal(hadOwnThree,savedThree);
+    reject(new Error("Falha ao carregar THREE r128 pelo cdnjs."));
+   };
+   addListener(script,"load",onLoad,{once:true});
+   addListener(script,"error",onError,{once:true});
+  });
+ }
+
+ async function loadThreeViaIsolatedFallback(){
+  const url="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+  const response=await fetch(url,{cache:"force-cache"});
+  if(!response.ok)throw new Error(`Fallback THREE r128 falhou: HTTP ${response.status}.`);
+  const source=await response.text();
+  const hadOwnThree=Object.prototype.hasOwnProperty.call(window,"THREE");
+  const savedThree=window.THREE;
+  let loaded=null;
+  try{
+   const execute=new Function("module","exports","define",`${source}\nreturn globalThis.THREE;`);
+   loaded=normalizeThreeNamespace(execute.call(window,undefined,undefined,undefined));
+  }finally{
+   restoreThreeGlobal(hadOwnThree,savedThree);
+  }
+  if(!loaded)throw new Error("THREE r128 foi obtido, mas WebGLRenderer continua indisponivel.");
+  return loaded;
+ }
+
+ function createFreshThreePromise(){
+  const p=loadThreeViaClassicScript().catch(()=>loadThreeViaIsolatedFallback()).then(candidate=>{
+   const normalized=normalizeThreeNamespace(candidate);
+   if(!normalized)throw new Error("Namespace THREE r128 invalido.");
+   return normalized;
+  });
+  window.__threeR128LoadPromise=p;
+  threeLoadPromise=p;
+  return p;
+ }
+
+ function loadThreeR128(){
+  const direct=normalizeThreeNamespace(window.THREE);
+  if(direct){
+   if(!window.__threeR128LoadPromise)window.__threeR128LoadPromise=Promise.resolve(direct);
+   threeLoadPromise=window.__threeR128LoadPromise;
+   return Promise.resolve(threeLoadPromise).then(candidate=>normalizeThreeNamespace(candidate)||direct).catch(()=>direct);
+  }
+  const existing=window.__threeR128LoadPromise;
+  if(existing){
+   const checked=Promise.resolve(existing).then(candidate=>{
+    const normalized=normalizeThreeNamespace(candidate);
+    if(normalized)return normalized;
+    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
+    return createFreshThreePromise();
+   }).catch(()=>{
+    if(window.__threeR128LoadPromise===existing)window.__threeR128LoadPromise=undefined;
+    return createFreshThreePromise();
+   });
+   window.__threeR128LoadPromise=checked;
+   threeLoadPromise=checked;
+   return checked;
+  }
+  return createFreshThreePromise();
+ }
+
+ function trackObjectResources(obj){
+  obj.traverse(o=>{
+   if(o.geometry)trackDisposable(o.geometry);
+   const m=o.material;
+   if(Array.isArray(m)){
+    for(let i=0;i<m.length;i++){
+     trackDisposable(m[i]);
+     if(m[i]&&m[i].map)trackDisposable(m[i].map);
+    }
+   }else if(m){
+    trackDisposable(m);
+    if(m.map)trackDisposable(m.map);
+   }
+  });
+ }
+
+ function freezeStatic(obj){
+  obj.traverse(o=>{
+   o.updateMatrix();
+   o.matrixAutoUpdate=false;
+  });
+ }
+
+ function emphasizeArrow(arrow){
+  arrow.traverse(o=>{
+   o.renderOrder=12;
+   if(o.material){
+    o.material.transparent=true;
+    o.material.opacity=1;
+    o.material.depthTest=false;
+    o.material.depthWrite=false;
+   }
+  });
+ }
 
  function createAxisLabel(text,color){
   const c=stage.createEl("canvas");
   c.width=64;
   c.height=64;
   c.style.display="none";
-
   const ctx=c.getContext("2d",{alpha:true});
   if(ctx){
    ctx.clearRect(0,0,64,64);
@@ -1640,14 +2031,11 @@ function buildVisualization(root){
    ctx.textBaseline="middle";
    ctx.fillText(text,32,32);
   }
-
   const tex=new T.CanvasTexture(c);
   tex.needsUpdate=true;
-
   const mat=new T.SpriteMaterial({map:tex,transparent:true,depthTest:false});
   const sprite=new T.Sprite(mat);
   sprite.scale.set(0.145,0.145,0.145);
-
   c.remove();
   trackDisposable(tex);
   trackDisposable(mat);
@@ -1655,15 +2043,14 @@ function buildVisualization(root){
  }
 
  /* ============================================================
-    THREE INIT
+    INIT
     ============================================================ */
 
  function initThree(candidate){
   if(state.cleaned||state.stop)return;
-
   const THREE=normalizeThreeNamespace(candidate);
   if(!THREE){
-   showFatal("THREE r128 foi carregado, porém WebGLRenderer não foi encontrado.");
+   showFatal("THREE r128 foi carregado, porem WebGLRenderer nao foi encontrado.");
    return;
   }
   T=THREE;
@@ -1677,7 +2064,7 @@ function buildVisualization(root){
     powerPreference:"high-performance"
    });
   }catch(err){
-   showFatal(`WebGL não pôde ser inicializado: ${err&&err.message?err.message:String(err)}`);
+   showFatal(`WebGL nao pode ser inicializado: ${err&&err.message?err.message:String(err)}`);
    return;
   }
 
@@ -1693,9 +2080,6 @@ function buildVisualization(root){
   camera=new T.PerspectiveCamera(38,1,0.05,20);
   camera.up.set(0,0,1);
 
-  // Luz: ambiente forte (mantem as cores de F.n legiveis) +
-  // uma direcional que segue a camera (headlight), dando o degrade
-  // claro->escuro que revela a esfera como convexa.
   scene.add(new T.AmbientLight(0xffffff,0.5));
   keyLight=new T.DirectionalLight(0xffffff,0.6);
   scene.add(keyLight);
@@ -1703,24 +2087,7 @@ function buildVisualization(root){
 
   updateCamera();
 
-  const initialRaw=getModeRaw(activeMode);
-
-  /* ---------- SPHERE ---------- */
-
-  const surfaceGeom=new T.BufferGeometry();
-  surfaceGeom.setAttribute("position",new T.BufferAttribute(baseRaw.surfacePositions,3));
-  surfaceGeom.setAttribute("normal",new T.BufferAttribute(baseRaw.surfaceNormals,3));
-
-  surfaceColorArray=new Float32Array(initialRaw.colors.length);
-  surfaceColorArray.set(initialRaw.colors);
-
-  surfaceColorAttr=new T.BufferAttribute(surfaceColorArray,3);
-  surfaceColorAttr.setUsage(T.DynamicDrawUsage);
-  surfaceGeom.setAttribute("color",surfaceColorAttr);
-
-  surfaceGeom.setIndex(new T.BufferAttribute(baseRaw.surfaceIndices,1));
-  surfaceGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),R);
-  trackDisposable(surfaceGeom);
+  /* ---------- SUPERFICIE ---------- */
 
   const surfaceMat=trackDisposable(new T.MeshLambertMaterial({
    vertexColors:true,
@@ -1730,21 +2097,23 @@ function buildVisualization(root){
    side:T.FrontSide
   }));
 
-  surfaceMesh=new T.Mesh(surfaceGeom,surfaceMat);
+  surfaceMesh=new T.Mesh(new T.BufferGeometry(),surfaceMat);
   surfaceMesh.renderOrder=2;
+  surfaceMesh.frustumCulled=false;
   scene.add(surfaceMesh);
-  freezeStatic(surfaceMesh);
 
-  /* ---------- FIELD ARROWS ---------- */
+  rebuildMeshBuffers();
 
-  fieldArrowArray=new Float32Array(initialRaw.arrows.length);
-  fieldArrowArray.set(initialRaw.arrows);
+  /* ---------- SETAS DE CAMPO ---------- */
 
+  const arr0=getArrowRaw(activeMode);
+  fieldArrowArray=new Float32Array(arr0.length);
+  fieldArrowArray.set(arr0);
   fieldArrowGeom=new T.BufferGeometry();
   fieldArrowAttr=new T.BufferAttribute(fieldArrowArray,3);
   fieldArrowAttr.setUsage(T.DynamicDrawUsage);
   fieldArrowGeom.setAttribute("position",fieldArrowAttr);
-  fieldArrowGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),2.6);
+  fieldArrowGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),3.0);
   trackDisposable(fieldArrowGeom);
 
   const fieldArrowMat=trackDisposable(new T.LineBasicMaterial({
@@ -1761,7 +2130,7 @@ function buildVisualization(root){
   fieldArrowObj.matrixAutoUpdate=false;
   scene.add(fieldArrowObj);
 
-  /* ---------- PARTICLES ---------- */
+  /* ---------- PARTICULAS ---------- */
 
   particlePositions=new Float32Array(PARTICLE_COUNT*3);
   particleAge=new Uint16Array(PARTICLE_COUNT);
@@ -1773,7 +2142,7 @@ function buildVisualization(root){
   particleAttr=new T.BufferAttribute(particlePositions,3);
   particleAttr.setUsage(T.DynamicDrawUsage);
   particleGeom.setAttribute("position",particleAttr);
-  particleGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),2.6);
+  particleGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),3.0);
   trackDisposable(particleGeom);
 
   const particleMat=trackDisposable(new T.PointsMaterial({
@@ -1793,19 +2162,19 @@ function buildVisualization(root){
   particles.matrixAutoUpdate=false;
   scene.add(particles);
 
-  /* ---------- TEMP OBJECTS ---------- */
+  /* ---------- TEMPORARIOS ---------- */
 
   tmpDir=new T.Vector3(1,0,0);
   tmpVec=new T.Vector3();
-  selectedN=new T.Vector3(1,0,0);
+  tmpN=new T.Vector3(1,0,0);
   pointerNdc=new T.Vector2();
   raycaster=new T.Raycaster();
   rayHits=[];
 
-  /* ---------- SELECTED POINT ---------- */
+  /* ---------- PONTO SELECIONADO ---------- */
 
   const selectedGeom=trackDisposable(new T.SphereGeometry(0.07,16,10));
-  selectedPointMat=trackDisposable(new T.MeshBasicMaterial({
+  const selectedPointMat=trackDisposable(new T.MeshBasicMaterial({
    color:0xF03A3A,
    transparent:true,
    opacity:1,
@@ -1830,23 +2199,19 @@ function buildVisualization(root){
   selectedFieldArrow.visible=false;
   selectedNormalArrow.renderOrder=11;
   selectedFieldArrow.renderOrder=11;
-
   scene.add(selectedNormalArrow);
   scene.add(selectedFieldArrow);
 
-  /* ---------- XYZ AXIS ---------- */
+  /* ---------- EIXOS ---------- */
 
   const axisGroup=new T.Group();
-  axisGroup.position.set(-1.04,-0.92,-0.80);
+  axisGroup.position.set(-1.16,-1.02,-0.92);
   const axisL=0.20;
 
   const negPos=new Float32Array(18);
-  negPos[0]=-axisL; negPos[1]=0; negPos[2]=0;
-  negPos[3]=0; negPos[4]=0; negPos[5]=0;
-  negPos[6]=0; negPos[7]=-axisL; negPos[8]=0;
-  negPos[9]=0; negPos[10]=0; negPos[11]=0;
-  negPos[12]=0; negPos[13]=0; negPos[14]=-axisL;
-  negPos[15]=0; negPos[16]=0; negPos[17]=0;
+  negPos[0]=-axisL; negPos[3]=0;
+  negPos[7]=-axisL;
+  negPos[14]=-axisL;
 
   const negCol=new Float32Array(18);
   negCol[0]=17/255; negCol[1]=180/255; negCol[2]=1;
@@ -1868,8 +2233,7 @@ function buildVisualization(root){
    depthWrite:false
   }));
 
-  const negAxes=new T.LineSegments(negGeom,negMat);
-  axisGroup.add(negAxes);
+  axisGroup.add(new T.LineSegments(negGeom,negMat));
 
   const ax=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),axisL,0x11B4FF,0.047,0.027);
   const ay=new T.ArrowHelper(new T.Vector3(0,1,0),new T.Vector3(0,0,0),axisL,0xFF2DAA,0.047,0.027);
@@ -1891,32 +2255,20 @@ function buildVisualization(root){
   scene.add(axisGroup);
   freezeStatic(axisGroup);
 
-  /* ---------- MINIMAP ---------- */
+  /* ---------- MINIMAPA ---------- */
 
   mapBase=buildMinimapBase(activeMode);
-
-  if(typeof OffscreenCanvas!=="undefined"){
-   mapTrailCanvas=new OffscreenCanvas(QUALITY.mapSize,QUALITY.mapSize);
-  }else{
-   mapTrailCanvas=stage.createEl("canvas");
-   mapTrailCanvas.width=QUALITY.mapSize;
-   mapTrailCanvas.height=QUALITY.mapSize;
-   mapTrailCanvas.style.display="none";
-  }
-  mapTrailCtx=mapTrailCanvas.getContext("2d",{alpha:true});
-  if(mapTrailCanvas instanceof HTMLElement)mapTrailCanvas.remove();
-
   mapCanvas=stage.createEl("canvas");
   mapCanvas.width=QUALITY.mapSize;
   mapCanvas.height=QUALITY.mapSize;
   mapCanvas.style.cssText=
    "position:absolute;right:10px;top:158px;z-index:8;" +
    `width:${MAP_DISPLAY_SIZE}px;height:${MAP_DISPLAY_SIZE}px;` +
-   "pointer-events:none;opacity:.82;border-radius:8px;" +
+   "pointer-events:none;opacity:.85;border-radius:8px;" +
    "border:1px solid rgba(184,188,200,.22)";
   mapCtx=mapCanvas.getContext("2d",{alpha:false});
 
-  /* ---------- EVENTS ---------- */
+  /* ---------- EVENTOS ---------- */
 
   const canvas=renderer.domElement;
 
@@ -1924,10 +2276,11 @@ function buildVisualization(root){
    e.preventDefault();
    state.stop=true;
    state.animating=false;
+   rotating=false;
    stopRaf();
    playBtnRef.disabled=true;
+   rotBtnRef.disabled=true;
    setText(playBtnRef,"\u25B6");
-   setText(statusEl,"Status: contexto WebGL perdido");
   },false);
 
   addListener(playBtnRef,"click",()=>{
@@ -1937,27 +2290,55 @@ function buildVisualization(root){
     state.accumulator=0;
     state.lastTime=0;
     ensureRaf();
-   }else{
+   }else if(!rotating){
     stopRaf();
    }
+   updatePlayStatus();
+  },false);
+
+  addListener(rotBtnRef,"click",()=>{
+   if(state.stop)return;
+   rotating=!rotating;
+   if(rotating){
+    state.lastTime=0;
+    ensureRaf();
+   }else if(!state.animating){
+    stopRaf();
+    applyGeometryState(true);
+    render();
+   }
+   updateXformButtonStyles();
    updatePlayStatus();
   },false);
 
   addListener(resetBtnRef,"click",()=>{
    cameraYaw=-0.58;
    cameraPitch=0.40;
-   cameraDistance=4.80;
+   cameraDistance=5.10;
    updateCamera();
    resetAllParticles();
    clearSelection();
-   overlayDirty=true;
+   rotAngle=0;
+   applyGeometryState(true);
    render();
   },false);
+
+  for(let i=0;i<GEOM_COUNT;i++){
+   const idx=i;
+   addListener(geomButtons[i],"click",()=>{ setGeometry(idx); },false);
+  }
 
   for(let i=0;i<MODE_COUNT;i++){
    const mode=i;
    addListener(fieldButtons[i],"click",()=>{ applyMode(mode); },false);
   }
+
+  addListener(btnLeft,"click",()=>{ stepX(-1); },false);
+  addListener(btnRight,"click",()=>{ stepX(1); },false);
+  addListener(btnUp,"click",()=>{ stepZ(1); },false);
+  addListener(btnDown,"click",()=>{ stepZ(-1); },false);
+  addListener(btnMinus,"click",()=>{ stepSize(1); },false);
+  addListener(btnPlus,"click",()=>{ stepSize(-1); },false);
 
   addListener(canvas,"pointerdown",e=>{
    pointerDown=true;
@@ -1975,11 +2356,9 @@ function buildVisualization(root){
    const dy=e.clientY-pointerLastY;
    pointerLastX=e.clientX;
    pointerLastY=e.clientY;
-
-   const sx=e.clientX-pointerStartX;
-   const sy=e.clientY-pointerStartY;
-   if(sx*sx+sy*sy>9)pointerMoved=true;
-
+   const sx2=e.clientX-pointerStartX;
+   const sy2=e.clientY-pointerStartY;
+   if(sx2*sx2+sy2*sy2>9)pointerMoved=true;
    if(pointerMoved){
     cameraYaw-=dx*0.006;
     cameraPitch-=dy*0.006;
@@ -2005,8 +2384,15 @@ function buildVisualization(root){
    raycaster.intersectObject(surfaceMesh,false,rayHits);
 
    if(rayHits.length>0){
-    tmpVec.copy(rayHits[0].point);
-    updateSelectedSample(tmpVec.x,tmpVec.y,tmpVec.z);
+    const hit=rayHits[0];
+    tmpVec.copy(hit.point);
+    let nx=1,ny=0,nz=0;
+    if(hit.face&&hit.face.normal){
+     nx=hit.face.normal.x;
+     ny=hit.face.normal.y;
+     nz=hit.face.normal.z;
+    }
+    selectFromWorld(tmpVec.x,tmpVec.y,tmpVec.z,nx,ny,nz);
     render();
    }
   },false);
@@ -2020,17 +2406,14 @@ function buildVisualization(root){
    e.preventDefault();
    cameraDistance*=Math.exp(e.deltaY*0.001);
    if(cameraDistance<3.20)cameraDistance=3.20;
-   if(cameraDistance>7.50)cameraDistance=7.50;
+   if(cameraDistance>8.50)cameraDistance=8.50;
    updateCamera();
    render();
   },{passive:false});
 
   addListener(document,"visibilitychange",()=>{
-   if(document.visibilityState!=="visible"){
-    stopRaf();
-   }else{
-    ensureRaf();
-   }
+   if(document.visibilityState!=="visible")stopRaf();
+   else ensureRaf();
    updatePlayStatus();
   },false);
 
@@ -2048,16 +2431,17 @@ function buildVisualization(root){
   });
   state.resizeObserver.observe(stage);
 
-  /* ---------- INITIAL STATE ---------- */
+  /* ---------- ESTADO INICIAL ---------- */
 
   resetAllParticles();
-  updateBalanceHUD();
+  applyGeometryState(true);
+  updateGeomButtonStyles();
   updateModeButtonStyles();
-  setText(maxLabel,`+${initialRaw.maxAbs.toFixed(2)}`);
-  setText(minLabel,`-${initialRaw.maxAbs.toFixed(2)}`);
+  updateXformButtonStyles();
 
   playBtnRef.disabled=false;
   resetBtnRef.disabled=false;
+  rotBtnRef.disabled=false;
   loading.remove();
   recalcRendererSize();
   overlayDirty=true;
@@ -2069,6 +2453,7 @@ function buildVisualization(root){
   if(window.__threeR128LoadPromise===threeLoadPromise)window.__threeR128LoadPromise=undefined;
   showFatal(err&&err.message?err.message:String(err));
  });
-}</script>
+}
+</script>
 </body>
 </html>
