@@ -268,10 +268,10 @@ function buildVisualization(root){
  const MODE_LABELS=[
   "1  Divergente",
   "2  Convergente",
-  "3  Uniforme",
+  "3  Uniforme ∇·F=0",
   "4  Paralelo c/ gradiente",
-  "5  Espalhado |F|=\u03B7",
-  "6  Incompress\u00EDvel"
+  "5  Espalhado |F|=cte",
+  "6  Incompress\u00EDvel ∇·F=0"
  ];
 
  const MODE_TITLES=[
@@ -308,7 +308,7 @@ function buildVisualization(root){
 
  const xformTitle=xformPanel.createEl("div");
  xformTitle.style.cssText="padding:0 2px 1px 2px;font:11px ui-monospace,monospace;color:#B8BCC8";
- setText(xformTitle,"Geometria");
+ setText(xformTitle,"Geometria, posição e rotação");
 
  const xformRow=xformPanel.createEl("div");
  xformRow.style.cssText="display:flex;gap:4px";
