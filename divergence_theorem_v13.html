@@ -43,9 +43,9 @@
 const dv={ container: document.getElementById("viz-root") };
 
 /* ============================================================
-   A PARTIR DAQUI: o código v21.
+   A PARTIR DAQUI: o código v22.
    ============================================================ */
-const BUILD="v21"; // bump on code edit
+const BUILD="v22"; // bump on code edit
 const STATE_KEY="__viz_divergence_theorem";
 const QUALITY={
  pixelRatio:1,
@@ -910,12 +910,13 @@ function buildVisualization(root){
   return canon.boundRadius*currentScale();
  }
 
- /* esquerda: solido inteiro em x<=0, tangente ao plano x=0
+ /* esquerda: tangente ao limite visual em -x
     centro:    centrado na origem
-    direita:   tangente ao limite visual em +x */
+    direita:   tangente ao limite visual em +x
+    (simetrico: o deslocamento e o mesmo dos dois lados) */
  function xPositions(){
   const rb=boundR();
-  return [-rb,0,X_VIS-rb];
+  return [-(X_VIS-rb),0,X_VIS-rb];
  }
 
  function zPositions(){
@@ -1095,7 +1096,7 @@ function buildVisualization(root){
      ~1e-5 relativo, entao um unico numero representa honestamente as duas. */
   setText(theoremEl,
    `\u222FS F\u00B7n dS = \u222D V \u2207\u00B7F dV = ${formatSigned(fluxValue)}`);
-  const xl=["tang. x=0","centro","limite x"][xPosIdx];
+  const xl=["limite -x","centro","limite +x"][xPosIdx];
   const zl=["abaixo","centro","acima"][zPosIdx];
   setText(geomStateEl,
    `${GEOM_LABELS[geomKindIdx]} \u00B7 ${SIZE_LABELS[sizeIdx]} \u00B7 ${xl} \u00B7 ${zl} \u00B7 V=${volumeValue.toFixed(3)}`);
