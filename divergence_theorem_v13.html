@@ -40,13 +40,12 @@
   }
 })();
 
-// "dv" falso: só precisa de um container que seja um elemento do DOM.
 const dv={ container: document.getElementById("viz-root") };
 
 /* ============================================================
-   A PARTIR DAQUI: seu código v13, sem alterações.
+   A PARTIR DAQUI: o código v18.
    ============================================================ */
-const BUILD="v13"; // bump on code edit
+const BUILD="v18"; // bump on code edit
 const STATE_KEY="__viz_divergence_theorem";
 const QUALITY={
  pixelRatio:1,
@@ -108,6 +107,7 @@ function buildVisualization(root){
  let scene=null;
  let camera=null;
  let surfaceMesh=null;
+ let keyLight=null;
 
  let lastWidth=-1;
  let lastHeight=-1;
@@ -316,7 +316,7 @@ function buildVisualization(root){
     ============================================================ */
 
  const STEP_MS=1000/QUALITY.targetFPS;
- const FIELD_VERSION="g_v12";
+ const FIELD_VERSION="g_v13";
 
  const R=0.70;
 
@@ -736,8 +736,9 @@ function buildVisualization(root){
 
  function emphasizeArrow(arrow){
   arrow.traverse(o=>{
+   o.renderOrder=12;
    if(o.material){
-    o.material.transparent=false;
+    o.material.transparent=true;
     o.material.opacity=1;
     o.material.depthTest=false;
     o.material.depthWrite=false;
@@ -860,19 +861,19 @@ function buildVisualization(root){
 
    const inv=1/(maxAbs||1);
 
-   const neutralR=0.835;
-   const neutralG=0.843;
-   const neutralB=0.871;
-   const blueR=0.490;
-   const blueG=0.624;
-   const blueB=0.902;
-   const redR=0.898;
-   const redG=0.545;
-   const redB=0.569;
+   const neutralR=0.70;
+   const neutralG=0.72;
+   const neutralB=0.76;
+   const blueR=0.22;
+   const blueG=0.48;
+   const blueB=1.00;
+   const redR=1.00;
+   const redG=0.30;
+   const redB=0.34;
 
    for(let i=0;i<vertexCount;i++){
     const rel=rawDot[i]*inv;
-    const t=Math.pow(Math.abs(rel),0.72);
+    const t=Math.pow(Math.abs(rel),0.62);
     let r,gc,b;
 
     if(rel>=0){
@@ -1106,15 +1107,15 @@ function buildVisualization(root){
     const maxAbs=raw.maxAbs||1;
     const inv=1/maxAbs;
 
-    const neutralR=0.835;
-    const neutralG=0.843;
-    const neutralB=0.871;
-    const blueR=0.490;
-    const blueG=0.624;
-    const blueB=0.902;
-    const redR=0.898;
-    const redG=0.545;
-    const redB=0.569;
+    const neutralR=0.70;
+    const neutralG=0.72;
+    const neutralB=0.76;
+    const blueR=0.22;
+    const blueG=0.48;
+    const blueB=1.00;
+    const redR=1.00;
+    const redG=0.30;
+    const redB=0.34;
 
     const alpha=0.72;
     const s=QUALITY.mapSize;
@@ -1139,7 +1140,7 @@ function buildVisualization(root){
 
       const dot=0.5*(dot1+dot2);
       const rel=dot*inv;
-      const t=Math.pow(Math.abs(rel),0.72);
+      const t=Math.pow(Math.abs(rel),0.62);
 
       let rr,gg,bb;
       if(rel>=0){
@@ -1313,6 +1314,10 @@ function buildVisualization(root){
    cameraDistance*Math.sin(cameraPitch)
   );
   camera.lookAt(0,0,0);
+  if(keyLight){
+   keyLight.position.copy(camera.position);
+   keyLight.position.z+=2.0;
+  }
  }
 
  /* ============================================================
@@ -1333,7 +1338,7 @@ function buildVisualization(root){
   tmpDir.set(fx/mag,fy/mag,fz/mag);
   arrow.setDirection(tmpDir);
 
-  const L=saturatedLength(mag/scale);
+  const L=1.6*saturatedLength(mag/scale);
   arrow.setLength(L,0.31*L,0.17*L);
   arrow.visible=true;
  }
@@ -1363,7 +1368,7 @@ function buildVisualization(root){
 
   selectedNormalArrow.position.set(selectedX,selectedY,selectedZ);
   selectedNormalArrow.setDirection(selectedN);
-  selectedNormalArrow.setLength(0.35,0.105,0.060);
+  selectedNormalArrow.setLength(0.30,0.10,0.06);
   selectedNormalArrow.visible=true;
 
   setFieldArrow(selectedFieldArrow,selectedX,selectedY,selectedZ,fx,fy,fz);
@@ -1687,6 +1692,15 @@ function buildVisualization(root){
   scene=new T.Scene();
   camera=new T.PerspectiveCamera(38,1,0.05,20);
   camera.up.set(0,0,1);
+
+  // Luz: ambiente forte (mantem as cores de F.n legiveis) +
+  // uma direcional que segue a camera (headlight), dando o degrade
+  // claro->escuro que revela a esfera como convexa.
+  scene.add(new T.AmbientLight(0xffffff,0.5));
+  keyLight=new T.DirectionalLight(0xffffff,0.6);
+  scene.add(keyLight);
+  scene.add(keyLight.target);
+
   updateCamera();
 
   const initialRaw=getModeRaw(activeMode);
@@ -1708,10 +1722,10 @@ function buildVisualization(root){
   surfaceGeom.boundingSphere=new T.Sphere(new T.Vector3(0,0,0),R);
   trackDisposable(surfaceGeom);
 
-  const surfaceMat=trackDisposable(new T.MeshBasicMaterial({
+  const surfaceMat=trackDisposable(new T.MeshLambertMaterial({
    vertexColors:true,
    transparent:true,
-   opacity:0.82,
+   opacity:0.92,
    depthWrite:false,
    side:T.FrontSide
   }));
@@ -1736,7 +1750,7 @@ function buildVisualization(root){
   const fieldArrowMat=trackDisposable(new T.LineBasicMaterial({
    color:0x11B4FF,
    transparent:true,
-   opacity:0.42,
+   opacity:0.7,
    depthWrite:false
   }));
 
@@ -1790,10 +1804,11 @@ function buildVisualization(root){
 
   /* ---------- SELECTED POINT ---------- */
 
-  const selectedGeom=trackDisposable(new T.SphereGeometry(0.058,16,10));
+  const selectedGeom=trackDisposable(new T.SphereGeometry(0.07,16,10));
   selectedPointMat=trackDisposable(new T.MeshBasicMaterial({
    color:0xF03A3A,
-   transparent:false,
+   transparent:true,
+   opacity:1,
    depthTest:false,
    depthWrite:false
   }));
@@ -1803,8 +1818,8 @@ function buildVisualization(root){
   selectedPoint.renderOrder=10;
   scene.add(selectedPoint);
 
-  selectedNormalArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.35,0xFFFFFF,0.105,0.060);
-  selectedFieldArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.30,0x11B4FF,0.095,0.055);
+  selectedNormalArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.30,0xFFFFFF,0.10,0.06);
+  selectedFieldArrow=new T.ArrowHelper(new T.Vector3(1,0,0),new T.Vector3(0,0,0),0.44,0x1E4FFF,0.15,0.085);
 
   trackObjectResources(selectedNormalArrow);
   trackObjectResources(selectedFieldArrow);
