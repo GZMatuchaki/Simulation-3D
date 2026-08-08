@@ -43,9 +43,9 @@
 const dv={ container: document.getElementById("viz-root") };
 
 /* ============================================================
-   A PARTIR DAQUI: o código v20.
+   A PARTIR DAQUI: o código v21.
    ============================================================ */
-const BUILD="v20"; // bump on code edit
+const BUILD="v21"; // bump on code edit
 const STATE_KEY="__viz_divergence_theorem";
 const QUALITY={
  pixelRatio:1,
@@ -1330,6 +1330,7 @@ function buildVisualization(root){
  let fieldArrowArray=null;
 
  let particleGeom=null;
+ let particleObj=null;
  let particleAttr=null;
  let particlePositions=null;
  let particleAge=null;
@@ -2160,7 +2161,9 @@ function buildVisualization(root){
   particles.renderOrder=4;
   particles.updateMatrix();
   particles.matrixAutoUpdate=false;
+  particles.visible=false; // so aparecem quando a animacao esta rodando
   scene.add(particles);
+  particleObj=particles;
 
   /* ---------- TEMPORARIOS ---------- */
 
@@ -2286,12 +2289,15 @@ function buildVisualization(root){
   addListener(playBtnRef,"click",()=>{
    if(state.stop)return;
    state.animating=!state.animating;
+   if(particleObj)particleObj.visible=state.animating;
    if(state.animating){
     state.accumulator=0;
     state.lastTime=0;
+    resetAllParticles(); // renascem espalhadas, nao amontoadas de onde pararam
     ensureRaf();
-   }else if(!rotating){
-    stopRaf();
+   }else{
+    if(!rotating)stopRaf();
+    render(); // redesenha ja sem as particulas
    }
    updatePlayStatus();
   },false);
@@ -2316,10 +2322,14 @@ function buildVisualization(root){
    cameraPitch=0.40;
    cameraDistance=5.10;
    updateCamera();
+   state.animating=false;
+   if(particleObj)particleObj.visible=false;
+   if(!rotating)stopRaf();
    resetAllParticles();
    clearSelection();
    rotAngle=0;
    applyGeometryState(true);
+   updatePlayStatus();
    render();
   },false);
 
