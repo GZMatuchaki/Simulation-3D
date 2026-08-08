@@ -361,7 +361,14 @@ function buildVisualization(root){
  playBtnRef.disabled=true;
  resetBtnRef.disabled=true;
  rotBtnRef.disabled=true;
-
+  
+const signature=stage.createEl("div");
+ signature.style.cssText=
+  "position:absolute;right:10px;bottom:78px;z-index:9;pointer-events:none;" +
+  "font:10px ui-monospace,monospace;color:rgba(184,188,200,.55);" +
+  "letter-spacing:.5px";
+ setText(signature,"GZMatuchaki");
+  
  const loading=stage.createEl("div");
  loading.style.cssText=
   "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);" +
